@@ -23,15 +23,16 @@ def Cli() -> None:
     parser = argparse.ArgumentParser(
         description=f'深澜网关登录器(第三方) 命令行 v{__version__}'
     )
-    parser.add_argument(
+    operation_group = parser.add_mutually_exclusive_group()
+    operation_group.add_argument(
         '-i', '--info', action="store_true",
         help='显示网关状态 Info'
     )
-    parser.add_argument(
+    operation_group.add_argument(
         '-l', '--login', action="store_true",
         help='登录网关 Login'
     )
-    parser.add_argument(
+    operation_group.add_argument(
         '-o', '--logout', action="store_true",
         help='登出网关 Logout'
     )
@@ -51,7 +52,7 @@ def Cli() -> None:
         '-L', '--local-ip', dest='local_ips', action='append',
         help='指定本机IP地址，可多次使用指定多个IP，可使用逗号分隔多个地址'
     )
-    parser.add_argument(
+    operation_group.add_argument(
         '--list-ips', action='store_true',
         help='列出本机可用IP地址 List local IP addresses'
     )
@@ -149,6 +150,7 @@ def Cli() -> None:
             print('未知操作! Unknown operation!')
 
     # Execute the selected operation / 执行选定的操作
+    operation_failed = False
     if mode is not None:
         if mode == 'info':
             for bind_ip in selected_ips:
@@ -159,11 +161,14 @@ def Cli() -> None:
                     is_available, is_online, online_data = client.is_connected()
                     print('网络是否可用 Available:', is_available)
                     print('是否已登录 Online:', is_online)
+                    if not is_available:
+                        operation_failed = True
                     if is_online:
                         print('在线信息 Online data:')
                         print(json.dumps(online_data, indent=4, ensure_ascii=False))
                 except Exception as exc:
                     print('查询失败 Failed to fetch status:', exc)
+                    operation_failed = True
         elif mode == 'login':
             if args.username is None:
                 username = input('请输入用户名 Username:')
@@ -179,22 +184,33 @@ def Cli() -> None:
                 print('\n=== IP:', label, '===')
                 try:
                     client = build_client(bind_ip)
-                    client.login(username, passwd)
-                    print('登录成功 Login succeeded')
+                    if client.login(username, passwd):
+                        print('登录成功 Login succeeded')
+                    else:
+                        print('登录失败 Login failed')
+                        operation_failed = True
                 except Exception as exc:
                     print('登录失败 Login failed:', exc)
+                    operation_failed = True
         elif mode == 'logout':
             for bind_ip in selected_ips:
                 label = bind_ip if bind_ip is not None else '默认(Default)'
                 print('\n=== IP:', label, '===')
                 try:
                     client = build_client(bind_ip)
-                    client.logout()
-                    print('注销成功 Logout succeeded')
+                    if client.logout():
+                        print('注销成功 Logout succeeded')
+                    else:
+                        print('注销失败 Logout failed')
+                        operation_failed = True
                 except Exception as exc:
                     print('注销失败 Logout failed:', exc)
+                    operation_failed = True
         elif mode == 'list_ips':
             list_ips()
+
+    if operation_failed:
+        raise SystemExit(1)
 
 
 def Gui(aes_key: Optional[str] = None) -> None:
@@ -209,7 +225,9 @@ def Gui(aes_key: Optional[str] = None) -> None:
         print('此命令仅支持Windows系统 This command is only supported on Windows system')
         return
 
-    from srunpy import GUIBackend, MainWindow, TaskbarIcon, __version__
+    from srunpy.interface import GUIBackend, MainWindow, TaskbarIcon
+    from srunpy.single_instance import WindowsSingleInstance
+    from srunpy.version import __version__
 
     parser = argparse.ArgumentParser(
         description=f'深澜网关登录器(第三方) 用户界面 v{__version__}'
@@ -224,15 +242,23 @@ def Gui(aes_key: Optional[str] = None) -> None:
     )
     args = parser.parse_args()
 
-    if aes_key is not None:
-        srunpy = GUIBackend(use_qt=args.qt, aes_key=aes_key)
-    else:
-        srunpy = GUIBackend(use_qt=args.qt)
+    with WindowsSingleInstance() as application_instance:
+        if application_instance.is_already_running:
+            print("校园网登录器已经在运行 SRunPy is already running")
+            return
 
-    main_window = MainWindow(srunpy, not args.no_auto_open)
-    while True:
-        TaskbarIcon()
-        main_window.start_webview()
+        if aes_key is not None:
+            srunpy = GUIBackend(use_qt=args.qt, aes_key=aes_key)
+        else:
+            srunpy = GUIBackend(use_qt=args.qt)
+
+        main_window = MainWindow(srunpy, not args.no_auto_open)
+        while True:
+            taskbar_icon = TaskbarIcon()
+            if taskbar_icon.should_exit:
+                srunpy.shutdown()
+                break
+            main_window.start_webview()
 
 
 def Main() -> None:
@@ -407,4 +433,3 @@ def Build() -> None:
         # Start program in background and exit / 后台启动程序并退出
         os.system('start ' + exe_path)
         return
-

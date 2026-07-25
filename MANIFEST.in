@@ -1,2 +1,5 @@
-include srunpy\html\*
-include srunpy\html\icons\*
+include LICENSE
+include README.md
+recursive-include srunpy/html *.css *.html *.ico *.js *.png *.ttf
+recursive-include packaging *.iss
+recursive-include scripts *.ps1

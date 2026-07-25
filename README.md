@@ -1,263 +1,195 @@
-# 校园网自动登陆器（深澜网关专用）
+# SRunPy 校园网登录器
 
-这是适用于Windows和普通Linux的版本，本工具还提供[适用于OpenWRT的版本](https://github.com/HofNature/SRunPy-OpenWRT)。
+适用于深澜（SRun）网关的第三方 Windows 客户端，同时保留可在 Windows/Linux 使用的命令行工具。
 
-### 支持功能
+> 本项目不是学校或深澜官方客户端。使用前请确认符合所在学校的网络管理规定。
 
-1. 记住账号密码
-2. 开机自动启动
-3. 掉线自动重连
-4. 从命令行操作
-5. 多网卡IP切换
+## 功能
 
-### 界面展示
+- 登录、注销和在线状态查询
+- 记住账号，并使用 Windows DPAPI 保护密码
+- 掉线自动重连，支持可配置检查间隔和有界退避
+- 多 IPv4 地址选择与源地址绑定
+- Windows 开机自启动和系统托盘
+- 网关与自服务地址配置
+- 默认使用经过证书验证的 HTTPS
+- 明确提示超时、TLS、网关协议和认证错误
+- Windows 浅色/深色主题和高 DPI 响应式界面
+- 命令行批量操作
 
-![界面展示](./Show.png)
+## Windows 客户端
 
-### 使用说明
+正式发布提供两种产物：
 
-**方法一:** 通过 `uv` 以工具模式安装 `srunpy`  (推荐)  
+1. `SRunPy-<version>-win-x64-setup.exe`：每用户安装包，不需要管理员权限；
+2. `SRunPy-<version>-win-x64-portable.zip`：解压即用的便携版。
 
-```sh
-uv tool install srunpy -p 3.13
-uv run srunpy
+客户端要求：
+
+- Windows 10 或 Windows 11 x64；
+- Microsoft Edge WebView2 Runtime（多数 Windows 10/11 已安装）；
+- 校园网使用深澜网页认证协议。
+
+安装版默认安装到：
+
+```text
+%LOCALAPPDATA%\Programs\SRunPy
 ```
-初次启动时会自动创建桌面快捷方式，之后可以直接双击桌面快捷方式启动程序。
 
+用户配置保存到：
 
-**方法二:** 通过 `pip` 安装 `srunpy` 并运行 `srunpy` 
-
-```sh
-# 需要先安装Python 3.7~3.13
-pip install srunpy
-srunpy
+```text
+%LOCALAPPDATA%\SRunPy\config.json
 ```
-由于深澜网关不提供登录Token，因此本程序需要保存您的账号密码才能工作。您的账户密码将会被保存在本地的配置文件中，除用于登录外不会被其他用途使用。
-本程序在保存您的账号密码时会使用AES加密，但默认AES密钥可以在本开源项目中找到，为确保安全，您可以通过如下命令重新编译本程序：
 
-```sh
-pip install srunpy[build]
-srunpy-build # 可通过--path指定输出路径，默认在您的桌面上
-```
-编译过程中会生成新的AES密钥，并硬编码到程序中，提高了您的账号密码的安全性。  此外，编译后的程序不再需要Python环境，可以直接运行。
-> **注意**: 
-本工具的编译借助Nuitka实现，优先使用Visual Studio 2021以上版本编译，若未安装，则会自动下载并使用MinGW64进行编译。编译后的程序无法通过pip升级，需要手动下载新版本并重新编译。  
+旧版本的 `%APPDATA%\SRunPy\config.json` 会在首次运行时迁移。旧 AES 密码成功解密后，将改用当前 Windows 用户的 DPAPI 保护；单独复制配置文件到其他用户或电脑不能直接解密密码。
 
-本程序默认使用Edge WebView2作为浏览器内核，可修改为QtWebEngine, 可用  
+## 从 Python 安装
 
-```sh
-pip install srunpy[qt]
-srunpy --qt
-```
-**方法三:** 前往 [Github Release](https://github.com/HofNature/SRunPy-GUI/releases) 下载SRunClient.zip,解压后直接运行  
-此方法无需安装Python环境，但无法使用命令行操作，且由于应用程序未签名，可能会被Windows Defender或其他杀毒软件误报。
-> **注意**: 
-自1.0.9版本起，不再提供编译好的可执行文件下载，如有需要可自行编译或使用pip安装。
+开发和 Python 安装方式统一使用 Python 3.12 x64：
 
-**方法四:** 从Github Clone 本项目，然后安装  
-
-```sh
-git clone https://github.com/HofNature/SRunPy-GUI.git
-cd SRunPy-GUI
-pip install .
+```powershell
+py -3.12 -m pip install .
 srunpy
 ```
 
-**方法五:** Clone 本项目，使用 `environment.yaml` 创建 Anaconda 环境，然后运行 `srun_client.py`  
+也可以使用 uv 工具模式：
 
-```sh
-git clone https://github.com/HofNature/SRunPy-GUI.git
-conda env create -f environment.yaml
-conda activate srunpy
-python srun_client.py
+```powershell
+uv tool install . --python 3.12
+srunpy
 ```
 
-> **备注**:  
-本程序默认设置为北航网关，其它使用深澜网页认证的用户可以点击界面左侧的设置按钮修改为自己学校的认证地址。若设备有多个网口，可在“本机IP地址”中勾选需要绑定的网卡IP并选择当前线路。  
-配置文件位于C:\Users\<用户名>\AppData\Roaming\SRunPy，其中的`config.json`文件保存了用户的账号密码等信息。
+Windows 上 `srunpy` 启动桌面客户端；Linux 上启动命令行界面。也可以显式运行：
 
-### 命令行使用说明
-
-本程序也支持命令行操作，以下是一些常用命令：
-
-- 查看网关状态:
-    ```sh
-    srunpy-cli --info
-    ```
-- 登录网关:
-    ```sh
-    srunpy-cli --login --username <你的用户名> --passwd <你的密码>
-    ```
-- 登出网关:
-    ```sh
-    srunpy-cli --logout
-    ```
-
-你可以指定网关地址，例如：
-
-```sh
-srunpy-cli --login --username <你的用户名> --passwd <你的密码> --gateway <网关地址>
+```powershell
+srunpy-gui
+srunpy-cli --info
 ```
 
-你可以使用 `--list-ips` 查看当前设备可绑定的本地IP地址：
+## 命令行用法
 
-```sh
+查询状态：
+
+```powershell
+srunpy-cli --info
+```
+
+登录：
+
+```powershell
+srunpy-cli --login --username <用户名>
+```
+
+未传入密码时会使用安全的交互式密码输入。虽然仍保留 `--passwd` 兼容参数，但密码可能出现在 shell 历史、进程列表或运维采集工具中，不建议使用。
+
+注销：
+
+```powershell
+srunpy-cli --logout
+```
+
+列出本机 IPv4 地址：
+
+```powershell
 srunpy-cli --list-ips
 ```
 
-登录、登出或查询状态时，可通过重复指定 `--local-ip`（或用逗号分隔的列表）来针对多个本地IP执行操作，例如：
+指定网关和多个本地 IP：
 
-```sh
-srunpy-cli --login --username <你的用户名> --passwd <你的密码> --local-ip 10.1.1.7 --local-ip 10.1.1.8
+```powershell
+srunpy-cli --info `
+  --gateway gw.example.edu.cn `
+  --local-ip 10.1.1.7 `
+  --local-ip 10.1.1.8
 ```
 
-如果未指定 `--local-ip`，默认使用操作系统的自动选择策略。
+操作完全成功时退出码为 `0`；查询不可达或登录/注销失败时退出码为非零值。
 
-### TODO
+## 连接安全
 
-1. 编写注释
-2. 支持 GUI 修改断线重连超时
+默认连接策略是“验证证书的 HTTPS，失败即停止”，不会再因任意网络异常静默使用 `verify=False` 或明文 HTTP。
 
-### 经测试院校
+如果学校网关确实使用自签名证书或仅支持 HTTP，可在客户端设置中显式开启兼容选项：
 
-1. 北京航空航天大学 沙河校区
+- **允许未经验证的 HTTPS 证书**：存在中间人攻击风险；
+- **允许明文 HTTP 兼容模式**：认证数据可能被监听或篡改，风险更高。
 
-### 致谢
+这些选项默认关闭，并且只应在确认学校网关要求时使用。网关请求默认不继承环境代理和 `.netrc`，避免校园认证流量被意外发送到代理。
 
-本程序后端基于 [iskoldt/srunauthenticator](https://github.com/iskoldt-X/SRUN-authenticator) 修改
+## 开发
 
-前端基于 [r0x0r/pywebview](https://github.com/r0x0r/pywebview) 开发
+创建开发环境：
 
-界面字体为 [MiSans Medium](https://hyperos.mi.com/font/details/sc)
-
----
-
-# Campus Network Auto Login Tool (For Srun Gateway)
-### Supported Features
-
-1. Remember account and password
-2. Auto start on boot
-3. Auto reconnect on disconnection
-4. Operate from command line
-5. Multi-NIC IP switching
-
-### Interface Display
-
-![Interface Display](./Show.png)
-
-### Usage Instructions
-
-**Method 1:** Install `srunpy` with `uv` in tool mode (Recommended)
-
-```sh
-uv tool install srunpy -p 3.13
-uv run srunpy
-```
-The first time you start, a desktop shortcut will be created automatically. You can then start the program by double-clicking the desktop shortcut.
-
-**Method 2:** Install `srunpy` via `pip` and run `srunpy`
-
-```sh
-# Requires Python 3.7~3.13
-pip install srunpy
-srunpy
-```
-Since the Srun gateway does not provide a login token, this program needs to save your account and password to work. Your account and password will be saved in a local configuration file and will not be used for any other purpose.
-This program uses AES encryption when saving your account and password, but the default AES key can be found in this open-source project. To ensure security, you can recompile this program with the following command:
-
-```sh
-pip install srunpy[build]
-srunpy-build # You can specify the output path with --path, default is on your desktop
-```
-During the compilation process, a new AES key will be generated and hardcoded into the program, improving the security of your account and password. Additionally, the compiled program no longer requires a Python environment and can be run directly.
-> **Note**: 
-The compilation of this tool is implemented with Nuitka. It is recommended to use Visual Studio 2021 or later versions for compilation. If not installed, MinGW64 will be automatically downloaded and used for compilation. The compiled program cannot be upgraded via pip and requires manual download of the new version and recompilation.
-
-This program uses Edge WebView2 as the browser engine by default. It can be changed to QtWebEngine, available with
-
-```sh
-pip install srunpy[qt]
-srunpy --qt
-```
-**Method 3:** Go to [Github Release](https://github.com/HofNature/SRunPy-GUI/releases) to download SRunClient.zip, unzip and run directly  
-This method does not require a Python environment but cannot use command line operations. Also, since the application is unsigned, it may be falsely flagged by Windows Defender or other antivirus software.
-> **Note**:
-Since version 1.0.9, precompiled executable files are no longer provided for download. If needed, you can compile it yourself or use pip to install.
-
-**Method 4:** Clone this project from Github and then install
-
-```sh
-git clone https://github.com/HofNature/SRunPy-GUI.git
-cd SRunPy-GUI
-pip install .
-srunpy
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -e ".[dev,build]"
 ```
 
-**Method 5:** Clone this project, create an Anaconda environment using `environment.yaml`, and then run `srun_client.py`
+运行质量检查：
 
-```sh
-git clone https://github.com/HofNature/SRunPy-GUI.git
-conda env create -f environment.yaml
-conda activate srunpy
-python srun_client.py
+```powershell
+.\.venv\Scripts\python -m pytest
+.\.venv\Scripts\python -m ruff check srunpy tests
+.\.venv\Scripts\python -m build
+node --check srunpy\html\script.js
 ```
 
-> **Note**:  
-This program is configured for the Beihang University gateway by default. Users connecting to other Srun gateways can click the settings button on the left side of the UI to update the authentication address.
-If the device has multiple network interfaces, you can check the desired network interface IPs in the "Local IP addresses" section
+测试覆盖协议固定向量、JSON/JSONP 解析、TLS 失败策略、请求超时、配置迁移、原子写入、CLI 退出码、自动重连和前端资源完整性。
 
-The configuration file is located at C:\Users\<username>\AppData\Roaming\SRunPy, where the `config.json` file saves the user's account and password information.
+## 构建 Windows 发布包
 
-### Command Line Usage Instructions
+构建要求：
 
-This program also supports command line operations. Here are some common commands:
+- Python 3.12 x64；
+- `pip install -e ".[dev,build]"`；
+- Inno Setup 6（只构建便携版时可省略）；
+- Visual Studio C++ Build Tools，或允许 Nuitka 下载 MinGW64。
 
-- Check gateway status:
-    ```sh
-    srunpy-cli --info
-    ```
-- Login to gateway:
-    ```sh
-    srunpy-cli --login --username <your username> --passwd <your password>
-    ```
-- Logout from gateway:
-    ```sh
-    srunpy-cli --logout
-    ```
+运行：
 
-You can specify the gateway address, for example:
-
-```sh
-srunpy-cli --login --username <your username> --passwd <your password> --gateway <gateway address>
+```powershell
+.\scripts\build_windows.ps1
 ```
 
-You can list available local IP addresses with:
+只构建便携版：
 
-```sh
-srunpy-cli --list-ips
+```powershell
+.\scripts\build_windows.ps1 -SkipInstaller
 ```
 
-When running `--info`, `--login`, or `--logout`, repeat `--local-ip` (or provide a comma-separated list) to operate on multiple local interfaces, for example:
+脚本执行测试和 Ruff，使用 Nuitka `standalone` 生成同一份目录产物，再创建：
 
-```sh
-srunpy-cli --login --username <your username> --passwd <your password> --local-ip 10.1.1.7 --local-ip 10.1.1.8
-```
+- 便携 ZIP；
+- Inno Setup 每用户安装包；
+- `SHA256SUMS.txt` 校验清单。
 
-If `--local-ip` is omitted, the default OS routing strategy is used.
+项目不使用 UPX，也不优先提供 one-file 自解压版本，以减少启动延迟和杀毒软件启发式误报。
 
-### TODO
+## 发布验收
 
-1. Write comments
-2. Support GUI modification of disconnection reconnection timeout
+发布前至少验证：
 
-### Tested Schools
+- Windows 10/11 普通用户安装、升级、卸载；
+- WebView2 存在与缺失场景；
+- 单实例、托盘恢复和开机启动；
+- 正确密码、错误密码、登录、注销和网关不可达；
+- 睡眠恢复、断网重连、DHCP 或多网卡切换；
+- 125%、150% 和 200% DPI；
+- 浅色/深色模式；
+- 安装版和便携版的 SHA-256 校验；
+- Defender/SmartScreen 扫描。
 
-1. Beihang University Shahe Campus
+## 已测试院校
 
-### Acknowledgements
+- 北京航空航天大学沙河校区
 
-The backend of this program is modified from [iskoldt/srunauthenticator](https://github.com/iskoldt-X/SRUN-authenticator)
+其他学校可能使用不同的深澜版本、证书或网关参数，请通过 Issue 提供脱敏后的错误代码和诊断信息。
 
-The frontend is developed based on [r0x0r/pywebview](https://github.com/r0x0r/pywebview)
+## 致谢与许可
 
-The interface font is [MiSans Medium](https://hyperos.mi.com/font/details/sc)
+- 深澜协议实现基于 [iskoldt-X/SRUN-authenticator](https://github.com/iskoldt-X/SRUN-authenticator) 修改；
+- 桌面容器使用 [pywebview](https://github.com/r0x0r/pywebview)；
+- 界面字体为 MiSans Medium。
+
+项目使用 [GPL-3.0](LICENSE) 许可证。

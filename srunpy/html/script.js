@@ -1,734 +1,489 @@
-// document.addEventListener('DOMContentLoaded', function () {
-//     updateInfo();
-// });
-let user_name = '';
-let srun_host = '';
-let srun_self = '';
-let hasUpdate = false;
-let selected_ips = [];
-let active_ip = null;
+"use strict";
 
-const DEFAULT_IP_TOKEN = '__auto__';
+const AUTO_INTERFACE_TOKEN = "__auto__";
 
-const settingsWizard = {
-    gateway: '',
-    selfService: '',
-    selectedTokens: new Set(),
-    activeToken: DEFAULT_IP_TOKEN,
-    results: [],
-    reachableCount: 0,
-    probeMeta: null,
-    step: 'gateway'
+const applicationState = {
+  config: null,
+  connection: null,
+  busy: false,
+  probeResults: [],
 };
 
-function resetSettingsWizardState() {
-    settingsWizard.gateway = '';
-    settingsWizard.selfService = '';
-    settingsWizard.selectedTokens = new Set();
-    settingsWizard.activeToken = DEFAULT_IP_TOKEN;
-    settingsWizard.results = [];
-    settingsWizard.reachableCount = 0;
-    settingsWizard.probeMeta = null;
-    settingsWizard.step = 'gateway';
+const elements = {};
+
+function cacheElements() {
+  const elementIds = [
+    "version-label",
+    "live-badge",
+    "live-badge-text",
+    "refresh-button",
+    "settings-button",
+    "status-panel",
+    "status-title",
+    "status-message",
+    "last-updated-label",
+    "interface-select",
+    "account-title",
+    "credential-badge",
+    "security-mode-label",
+    "login-form",
+    "username-input",
+    "password-input",
+    "password-visibility",
+    "form-message",
+    "primary-action",
+    "metric-username",
+    "metric-ip",
+    "metric-traffic",
+    "metric-balance",
+    "auto-login-toggle",
+    "auto-start-toggle",
+    "self-service-button",
+    "gateway-label",
+    "settings-dialog",
+    "settings-form",
+    "close-settings-button",
+    "cancel-settings-button",
+    "save-settings-button",
+    "gateway-input",
+    "self-service-input",
+    "probe-button",
+    "interface-options",
+    "probe-message",
+    "reconnect-interval-input",
+    "unverified-tls-toggle",
+    "insecure-http-toggle",
+    "settings-message",
+  ];
+  elementIds.forEach((elementId) => {
+    elements[elementId] = document.getElementById(elementId);
+  });
 }
 
-function tokenForIp(ip) {
-    return (ip === null || typeof ip === 'undefined' || ip === '') ? DEFAULT_IP_TOKEN : String(ip);
+async function waitForBackend() {
+  while (!(window.pywebview && window.pywebview.api)) {
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+  }
+  return window.pywebview.api;
 }
 
-function ipFromToken(token) {
-    return token === DEFAULT_IP_TOKEN ? null : token;
+function activeInterfaceValue() {
+  const activeIp = applicationState.config ? applicationState.config.active_ip : null;
+  return activeIp === null || typeof activeIp === "undefined"
+    ? AUTO_INTERFACE_TOKEN
+    : String(activeIp);
 }
 
-function updateInfo(hope, after) {
-    let callback = (e) => {
-        is_available = e[0];
-        if (!is_available) {
-            showAlert("不在校园网环境！");
-            document.getElementsByClassName('login-pannel')[0].setAttribute('data-state', 'offline');
-            load_data();
-            return;
-        }
-        is_online = e[1];
-        if (!is_online) {
-            document.getElementsByClassName('login-pannel')[0].setAttribute('data-state', 'offline');
-        }
-        else {
-            document.getElementsByClassName('login-pannel')[0].setAttribute('data-state', 'online');
-            online_data = e[2];
-            // console.log(online_data);
-            document.getElementById('ip-address').innerText = online_data.online_ip;
-            document.getElementById('username-text').innerText = online_data.user_name;
-            document.getElementById('used-flow').innerText = (online_data.sum_bytes / 1024 / 1024).toFixed(2) + 'MB';
-            document.getElementById('balance-last').innerText = online_data.user_balance + '元';
-        }
-        load_data();
-        if (after) after();
-    }
-    const ipParam = active_ip === null ? null : active_ip;
-    const hopeParam = typeof hope === 'undefined' ? null : hope;
-    let init = () => {
-        if (!(window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_online_data === 'function')) {
-            setTimeout(init, 100);
-        }
-        else {
-            window.pywebview.api.get_online_data(ipParam, hopeParam).then(callback);
-        }
-    }
-    init();
+function interfaceFromToken(interfaceToken) {
+  return interfaceToken === AUTO_INTERFACE_TOKEN ? null : interfaceToken;
 }
-function load_data() {
-    window.pywebview.api.get_config().then((e) => {
-        document.getElementById('username').value = e[0];
-        user_name = e[0];
-        if (e[1]) {
-            document.getElementById('password').value = '************';
-        }
-        else {
-            document.getElementById('password').value = '';
-        }
-        if (e[2]) {
-            document.getElementById('auto-login').setAttribute('data-state', "selected");
-        }
-        else {
-            document.getElementById('auto-login').setAttribute('data-state', "unselected");
-        }
-        if (e[3]) {
-            document.getElementById('auto-start').setAttribute('data-state', "selected");
-        }
-        else {
-            document.getElementById('auto-start').setAttribute('data-state', "unselected");
-        }
-        hasUpdate = e[4];
-        if (e[4] && !e[5]) {
-            do_Update();
-            window.pywebview.api.do_update(false);
-        }
-        srun_host = e[6];
-        srun_self = e[7];
-        active_ip = e[8] === null ? null : e[8];
-        selected_ips = Array.isArray(e[9]) ? e[9].slice() : [];
-        renderIpSelector();
+
+function setMessage(element, message, state = "") {
+  element.textContent = message || "";
+  if (state) {
+    element.dataset.state = state;
+  } else {
+    delete element.dataset.state;
+  }
+}
+
+function setBusy(isBusy, message = "") {
+  applicationState.busy = isBusy;
+  elements["primary-action"].disabled = isBusy;
+  elements["refresh-button"].disabled = isBusy;
+  elements["interface-select"].disabled = isBusy;
+  if (message) {
+    setMessage(elements["form-message"], message);
+  }
+}
+
+function formatTraffic(rawBytes) {
+  const byteCount = Number(rawBytes);
+  if (!Number.isFinite(byteCount) || byteCount < 0) {
+    return "--";
+  }
+  if (byteCount >= 1024 ** 3) {
+    return `${(byteCount / 1024 ** 3).toFixed(2)} GB`;
+  }
+  return `${(byteCount / 1024 ** 2).toFixed(2)} MB`;
+}
+
+function renderInterfaceSelector() {
+  const select = elements["interface-select"];
+  select.replaceChildren();
+  const selectedIps = Array.isArray(applicationState.config.selected_ips)
+    ? applicationState.config.selected_ips
+    : [null];
+
+  selectedIps.forEach((interfaceIp) => {
+    const option = document.createElement("option");
+    option.value = interfaceIp === null ? AUTO_INTERFACE_TOKEN : String(interfaceIp);
+    option.textContent = interfaceIp === null ? "自动选择" : String(interfaceIp);
+    select.appendChild(option);
+  });
+
+  if (!select.options.length) {
+    const option = document.createElement("option");
+    option.value = AUTO_INTERFACE_TOKEN;
+    option.textContent = "自动选择";
+    select.appendChild(option);
+  }
+  select.value = activeInterfaceValue();
+}
+
+function renderConfig() {
+  const config = applicationState.config;
+  elements["version-label"].textContent = `Windows 客户端 v${config.version}`;
+  elements["username-input"].value = config.username || "";
+  elements["credential-badge"].textContent = config.has_password ? "凭据已安全保存" : "未保存凭据";
+  elements["credential-badge"].dataset.active = String(Boolean(config.has_password));
+  elements["auto-login-toggle"].checked = Boolean(config.auto_login);
+  elements["auto-start-toggle"].checked = Boolean(config.start_with_windows);
+  elements["gateway-label"].textContent = `网关：${config.gateway}`;
+  if (config.allow_insecure_http) {
+    elements["security-mode-label"].textContent = "已启用明文 HTTP 兼容模式";
+  } else if (config.allow_unverified_tls) {
+    elements["security-mode-label"].textContent = "已允许未经验证的 HTTPS 证书";
+  } else {
+    elements["security-mode-label"].textContent = "使用经过证书验证的 HTTPS";
+  }
+  renderInterfaceSelector();
+}
+
+function renderConnection() {
+  const connection = applicationState.connection;
+  const statusPanel = elements["status-panel"];
+  const connectionData = connection && connection.data ? connection.data : {};
+
+  if (!connection) {
+    statusPanel.dataset.state = "loading";
+    elements["live-badge"].dataset.state = "loading";
+    elements["live-badge-text"].textContent = "检查中";
+    elements["status-title"].textContent = "正在检查网络";
+    elements["status-message"].textContent = "正在连接校园网网关...";
+  } else if (connection.online) {
+    statusPanel.dataset.state = "online";
+    elements["live-badge"].dataset.state = "online";
+    elements["live-badge-text"].textContent = "在线";
+    elements["status-title"].textContent = "校园网已连接";
+    elements["status-message"].textContent = "当前线路认证正常";
+  } else if (connection.available) {
+    statusPanel.dataset.state = "offline";
+    elements["live-badge"].dataset.state = "offline";
+    elements["live-badge-text"].textContent = "待登录";
+    elements["status-title"].textContent = "等待登录";
+    elements["status-message"].textContent = "网关可访问，登录后即可使用校园网";
+  } else {
+    statusPanel.dataset.state = "error";
+    elements["live-badge"].dataset.state = "error";
+    elements["live-badge-text"].textContent = "不可用";
+    elements["status-title"].textContent = "网关不可用";
+    elements["status-message"].textContent = connection.message || "请检查网络接口或网关设置";
+  }
+
+  if (connection) {
+    elements["last-updated-label"].textContent = new Date().toLocaleTimeString("zh-CN", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     });
+  }
+
+  const footerDot = document.querySelector(".footer-dot");
+  if (footerDot) {
+    footerDot.style.background = connection && connection.online ? "var(--accent)" : "var(--muted-foreground)";
+  }
+
+  const isOnline = Boolean(connection && connection.online);
+  elements["account-title"].textContent = isOnline ? "当前已登录" : "账号登录";
+  elements["primary-action"].textContent = isOnline ? "注销当前线路" : "登录校园网";
+  elements["username-input"].disabled = isOnline;
+  elements["password-input"].disabled = isOnline;
+  elements["password-visibility"].disabled = isOnline;
+
+  elements["metric-username"].textContent = connectionData.user_name || "--";
+  elements["metric-ip"].textContent = connectionData.online_ip || connectionData.client_ip || "--";
+  elements["metric-traffic"].textContent = formatTraffic(connectionData.sum_bytes);
+  elements["metric-balance"].textContent =
+    typeof connectionData.user_balance !== "undefined" ? `${connectionData.user_balance} 元` : "--";
 }
 
-function renderIpSelector() {
-    const selector = document.getElementById('ip-selector');
-    if (!selector) {
-        return;
-    }
-    const desiredValue = active_ip === null ? DEFAULT_IP_TOKEN : String(active_ip);
-    selector.innerHTML = '';
-    const seen = new Set();
-    selected_ips.forEach((ip) => {
-        if (ip === undefined) {
-            return;
-        }
-        if (ip === null) {
-            const defaultOption = document.createElement('option');
-            defaultOption.value = DEFAULT_IP_TOKEN;
-            defaultOption.innerText = '自动选择';
-            selector.insertBefore(defaultOption, selector.firstChild);
-            return;
-        }
-        const ipStr = String(ip);
-        if (seen.has(ipStr)) {
-            return;
-        }
-        seen.add(ipStr);
-        const option = document.createElement('option');
-        option.value = ipStr;
-        option.innerText = ipStr;
-        selector.appendChild(option);
-    });
-    selector.value = desiredValue;
-    selector.onchange = handleIpSelectionChange;
+async function loadApplication() {
+  const backend = await waitForBackend();
+  try {
+    applicationState.config = await backend.get_app_state();
+    renderConfig();
+    await refreshConnection();
+  } catch (error) {
+    applicationState.connection = {
+      available: false,
+      online: false,
+      data: {},
+      message: String(error),
+    };
+    renderConnection();
+  }
 }
 
-function handleIpSelectionChange(event) {
-    const value = event.target.value;
-    const nextActive = value === DEFAULT_IP_TOKEN ? null : value;
-    if ((nextActive || null) === (active_ip || null)) {
-        return;
-    }
-    window.pywebview.api.set_active_client_ip(nextActive).then((ok) => {
-        if (ok) {
-            active_ip = nextActive;
-            updateInfo();
-        }
-        else {
-            showAlert("无法切换到所选IP！");
-            renderIpSelector();
-        }
-    });
+async function refreshConnection() {
+  const backend = await waitForBackend();
+  applicationState.connection = null;
+  renderConnection();
+  applicationState.connection = await backend.get_connection_status(
+    interfaceFromToken(activeInterfaceValue()),
+  );
+  renderConnection();
 }
 
-function do_Update() {
-    if (hasUpdate) {
-        showConfirmAlert('检查到更新，立即下载吗？', () => {
-            if (!window.pywebview.api.do_update(true)) {
-                showAlert("更新失败！请手动下载最新版本。");
-            }
-        });
+async function handlePrimaryAction(event) {
+  event.preventDefault();
+  if (applicationState.busy) {
+    return;
+  }
+  const backend = await waitForBackend();
+  const isOnline = Boolean(applicationState.connection && applicationState.connection.online);
+  setBusy(true, isOnline ? "正在注销..." : "正在登录...");
+
+  try {
+    let result;
+    if (isOnline) {
+      result = await backend.perform_logout(interfaceFromToken(activeInterfaceValue()));
+    } else {
+      result = await backend.perform_login(
+        elements["username-input"].value,
+        elements["password-input"].value,
+        interfaceFromToken(activeInterfaceValue()),
+      );
     }
-    else {
-        showConfirmAlert('深澜网关第三方客户端', () => { window.pywebview.api.webbrowser_open("https://github.com/HofNature/SRunPy-GUI") }, "icons/github.png");
+    setMessage(elements["form-message"], result.message, result.ok ? "success" : "error");
+    if (result.ok) {
+      elements["password-input"].value = "";
+      applicationState.config = await backend.get_app_state();
+      renderConfig();
+      await refreshConnection();
     }
+  } catch (error) {
+    setMessage(elements["form-message"], String(error), "error");
+  } finally {
+    setBusy(false);
+  }
 }
-function set_auto_login() {
-    if (document.getElementById('auto-login').getAttribute('data-state') == 'selected') {
-        document.getElementById('auto-login').setAttribute('data-state', 'unselected');
-        window.pywebview.api.set_auto_login(false);
-    }
-    else {
-        document.getElementById('auto-login').setAttribute('data-state', 'selected');
-        window.pywebview.api.get_online_data(active_ip === null ? null : active_ip).then((e) => {
-            is_online = e[1];
-            if (is_online) {
-                window.pywebview.api.set_auto_login(true).then((e) => {
-                    if (!e) {
-                        showAlert("请至少用本工具登录一次！");
-                        document.getElementById('auto-login').setAttribute('data-state', 'unselected');
-                    }
-                });
-            }
-            else {
-                showAlert("仅限登录状态下启用！");
-                document.getElementById('auto-login').setAttribute('data-state', 'unselected');
-            }
-        });
-    }
+
+async function handleInterfaceChange() {
+  const backend = await waitForBackend();
+  const selectedIp = interfaceFromToken(elements["interface-select"].value);
+  const changed = await backend.set_active_client_ip(selectedIp);
+  if (!changed) {
+    elements["interface-select"].value = activeInterfaceValue();
+    setMessage(elements["form-message"], "无法切换到所选线路", "error");
+    return;
+  }
+  applicationState.config.active_ip = selectedIp;
+  await refreshConnection();
 }
-function set_auto_start() {
-    if (document.getElementById('auto-start').getAttribute('data-state') == 'selected') {
-        document.getElementById('auto-start').setAttribute('data-state', 'unselected');
-        window.pywebview.api.set_start_with_windows(false);
-    }
-    else {
-        document.getElementById('auto-start').setAttribute('data-state', 'selected');
-        window.pywebview.api.set_start_with_windows(true);
-    }
+
+async function handleAutoLoginToggle() {
+  const backend = await waitForBackend();
+  const desiredValue = elements["auto-login-toggle"].checked;
+  const changed = await backend.set_auto_login(desiredValue);
+  if (!changed) {
+    elements["auto-login-toggle"].checked = false;
+    setMessage(elements["form-message"], "请先使用正确凭据成功登录一次", "error");
+  }
+  applicationState.config = await backend.get_app_state();
+  renderConfig();
 }
-function login() {
-    document.getElementsByClassName('login-button')[0].disabled = true;
-    window.pywebview.api.get_online_data(active_ip === null ? null : active_ip).then((e) => {
-        is_available = e[0];
-        if (!is_available) {
-            showAlert("不在校园网环境！");
-            document.getElementsByClassName('login-button')[0].disabled = false;
-            return;
-        }
-        is_online = e[1];
-        if (is_online != (document.getElementsByClassName('login-pannel')[0].getAttribute('data-state') == 'online')) {
-            updateInfo();
-            document.getElementsByClassName('login-button')[0].disabled = false;
-            return;
-        }
-        if (!is_online) {
-            if (document.getElementById('username').value == '' || document.getElementById('password').value == '') {
-                showAlert("用户名或密码不能为空！");
-                document.getElementsByClassName('login-button')[0].disabled = false;
-                return;
-            }
-            if (user_name != document.getElementById('username').value) {
-                user_name = document.getElementById('username').value;
-            }
-            if (document.getElementById('password').value != '************') {
-                password = document.getElementById('password').value;
-            }
-            else {
-                password = '';
-            }
-            window.pywebview.api.set_config(user_name, password).then((e) => {
-                window.pywebview.api.login(active_ip === null ? null : active_ip).then((e) => {
-                    if (e) {
-                        if (document.getElementById('auto-start').getAttribute('data-state') == 'selected') {
-                            window.pywebview.api.set_start_with_windows(true).then(() => {
-                                updateInfo(true);
-                            });
-                        }
-                        else {
-                            updateInfo(true);
-                        }
-                    }
-                    else {
-                        showAlert("登录失败！");
-                    }
-                    document.getElementsByClassName('login-button')[0].disabled = false;
-                });
-            });
-        }
-        else {
-            window.pywebview.api.set_auto_login(false).then((e) => {
-                window.pywebview.api.logout(active_ip === null ? null : active_ip).then((e) => {
-                    let unlock = () => { document.getElementsByClassName('login-button')[0].disabled = false; }
-                    if (e == "success") {
-                        updateInfo(false, unlock);
-                    }
-                    else {
-                        if (e == "failed") showAlert("注销失败！");
-                        else if (e == "timeout") showAlert("注销超时！");
-                        else showAlert(`内部错误：${e}`);
-                        unlock();
-                    }
-                });
-            });
-        }
-    });
+
+async function handleAutoStartToggle() {
+  const backend = await waitForBackend();
+  elements["auto-start-toggle"].disabled = true;
+  try {
+    await backend.set_start_with_windows(elements["auto-start-toggle"].checked);
+    applicationState.config = await backend.get_app_state();
+    renderConfig();
+  } catch (error) {
+    elements["auto-start-toggle"].checked = !elements["auto-start-toggle"].checked;
+    setMessage(elements["form-message"], `无法修改开机启动：${error}`, "error");
+  } finally {
+    elements["auto-start-toggle"].disabled = false;
+  }
 }
 
 function openSettings() {
-    window.pywebview.api.get_ip_settings().then((settings) => {
-        resetSettingsWizardState();
-        settingsWizard.gateway = settings.gateway || '';
-        settingsWizard.selfService = settings.self_service || '';
-        const selectedFromConfig = Array.isArray(settings.selected) ? settings.selected.slice() : (Array.isArray(selected_ips) ? selected_ips.slice() : []);
-        if (selectedFromConfig.length > 0) {
-            settingsWizard.selectedTokens = new Set(selectedFromConfig.map(tokenForIp));
-        } else {
-            settingsWizard.selectedTokens = new Set([DEFAULT_IP_TOKEN]);
-        }
-        const activeFromConfig = (settings.active !== undefined && settings.active !== null) ? settings.active : active_ip;
-        settingsWizard.activeToken = tokenForIp(activeFromConfig);
-        if (!settingsWizard.selectedTokens.has(settingsWizard.activeToken)) {
-            settingsWizard.selectedTokens.add(settingsWizard.activeToken);
-        }
-        document.getElementById('settings-gateway').value = settingsWizard.gateway;
-        document.getElementById('settings-self-service').value = settingsWizard.selfService;
-        document.getElementById('settings-step-gateway').classList.add('active');
-        document.getElementById('settings-step-ip').classList.remove('active');
-        document.getElementById('settings-probe-status').innerText = '点击下一步将检查配置正确性';
-        // document.getElementById('settings-probe-results').innerHTML = '';
-        document.getElementById('settings-probe-results').style.display = 'none';
-        // document.getElementById('settings-confirm-ips').disabled = true;
-        document.getElementById('settings-confirm-ips').style.display = "none";
-        document.getElementById('settings-action-next').classList.remove('hidden');
-        document.getElementById('settings-action-refresh').classList.add('hidden');
-        document.getElementById('settings-action-save').classList.add('hidden');
-        document.getElementById('settings-action-back').classList.add('hidden');
-        document.getElementById('settings-action-next').disabled = false;
-        const refreshButton = document.getElementById('settings-action-refresh');
-        if (refreshButton) {
-            refreshButton.disabled = false;
-        }
-        const saveButton = document.getElementById('settings-action-save');
-        if (saveButton) {
-            saveButton.disabled = false;
-        }
-        const mask = document.getElementById('settings-mask');
-        mask.style.display = 'block';
-        setTimeout(() => { mask.style.opacity = '1'; }, 20);
+  const config = applicationState.config;
+  elements["gateway-input"].value = config.gateway || "";
+  elements["self-service-input"].value = config.self_service || "";
+  elements["reconnect-interval-input"].value = String(config.reconnect_interval || 5);
+  elements["unverified-tls-toggle"].checked = Boolean(config.allow_unverified_tls);
+  elements["insecure-http-toggle"].checked = Boolean(config.allow_insecure_http);
+  applicationState.probeResults = [];
+  renderInterfaceOptions();
+  setMessage(elements["probe-message"], "");
+  setMessage(elements["settings-message"], "");
+  elements["settings-dialog"].showModal();
+}
+
+function getSettingsInterfaces() {
+  if (applicationState.probeResults.length) {
+    return applicationState.probeResults;
+  }
+  const availableIps = Array.isArray(applicationState.config.available_ips)
+    ? applicationState.config.available_ips
+    : [];
+  return [
+    { ip: null, label: "自动选择", reachable: null, message: "使用系统默认路由" },
+    ...availableIps.map((interfaceIp) => ({
+      ip: interfaceIp,
+      label: interfaceIp,
+      reachable: null,
+      message: "本机 IPv4 地址",
+    })),
+  ];
+}
+
+function renderInterfaceOptions() {
+  const selectedTokens = new Set(
+    (applicationState.config.selected_ips || [null]).map((interfaceIp) =>
+      interfaceIp === null ? AUTO_INTERFACE_TOKEN : String(interfaceIp),
+    ),
+  );
+  const activeToken = activeInterfaceValue();
+  elements["interface-options"].replaceChildren();
+
+  getSettingsInterfaces().forEach((interfaceInfo) => {
+    const interfaceToken = interfaceInfo.ip === null ? AUTO_INTERFACE_TOKEN : String(interfaceInfo.ip);
+    const row = document.createElement("div");
+    row.className = "interface-option";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = interfaceToken;
+    checkbox.checked = selectedTokens.has(interfaceToken);
+    checkbox.dataset.role = "selected-interface";
+
+    const description = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = interfaceInfo.label || interfaceToken;
+    const detail = document.createElement("small");
+    detail.textContent = interfaceInfo.message || "";
+    description.append(title, document.createElement("br"), detail);
+
+    const radioLabel = document.createElement("label");
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "active-interface";
+    radio.value = interfaceToken;
+    radio.checked = interfaceToken === activeToken;
+    radio.dataset.role = "active-interface";
+    radio.addEventListener("change", () => {
+      checkbox.checked = true;
     });
+    radioLabel.append(radio, " 当前");
+    row.append(checkbox, description, radioLabel);
+    elements["interface-options"].appendChild(row);
+  });
 }
 
-function closeSettings() {
-    const mask = document.getElementById('settings-mask');
-    if (!mask) {
-        return;
+async function probeInterfaces() {
+  const backend = await waitForBackend();
+  elements["probe-button"].disabled = true;
+  setMessage(elements["probe-message"], "正在检查各网络接口...");
+  try {
+    const result = await backend.probe_gateway_ips(
+      elements["gateway-input"].value,
+      elements["self-service-input"].value,
+    );
+    if (!result.ok) {
+      setMessage(elements["probe-message"], result.error || "检查失败", "error");
+      return;
     }
-    if (mask.style.opacity !== '0') {
-        mask.style.opacity = '0';
-        setTimeout(() => {
-            if (mask.style.opacity === '0') {
-                mask.style.display = 'none';
-            }
-        }, 300);
-    }
+    applicationState.probeResults = Array.isArray(result.results) ? result.results : [];
+    renderInterfaceOptions();
+    setMessage(
+      elements["probe-message"],
+      `已检查 ${applicationState.probeResults.length} 条线路，${result.reachable_count} 条可访问`,
+      result.reachable_count > 0 ? "success" : "error",
+    );
+  } catch (error) {
+    setMessage(elements["probe-message"], `检查失败：${error}`, "error");
+  } finally {
+    elements["probe-button"].disabled = false;
+  }
 }
 
-function populateSettingsIpList(results) {
-    const ipList = document.getElementById('settings-ip-list');
-    if (!ipList) {
-        return;
-    }
-    ipList.innerHTML = '';
-    if (!Array.isArray(results) || results.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'settings-ip-empty';
-        empty.innerText = '未检测到任何IP地址';
-        ipList.appendChild(empty);
-        return;
-    }
-    results.forEach((entry) => {
-        const token = tokenForIp(entry.ip);
-        const row = document.createElement('div');
-        row.className = 'settings-ip-item';
+function collectInterfaceSettings() {
+  const selectedCheckboxes = elements["interface-options"].querySelectorAll(
+    'input[data-role="selected-interface"]:checked',
+  );
+  const selectedIps = Array.from(selectedCheckboxes).map((checkbox) =>
+    interfaceFromToken(checkbox.value),
+  );
+  const activeRadio = elements["interface-options"].querySelector(
+    'input[data-role="active-interface"]:checked',
+  );
+  const activeIp = activeRadio ? interfaceFromToken(activeRadio.value) : selectedIps[0] || null;
+  return { selectedIps: selectedIps.length ? selectedIps : [null], activeIp };
+}
 
-        const status = document.createElement('div');
-        status.className = 'settings-ip-status';
-        status.innerText = entry.reachable ? '可用' : '不可用';
-        status.dataset.state = entry.reachable ? 'ok' : 'fail';
-
-        const checkboxLabel = document.createElement('label');
-        checkboxLabel.className = 'settings-ip-checkbox-label';
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = 'settings-ip-checkbox';
-        checkbox.value = token;
-        if (settingsWizard.selectedTokens.has(token)) {
-            checkbox.checked = true;
-        }
-        const textSpan = document.createElement('div');
-        textSpan.className = 'settings-ip-description';
-        const title = document.createElement('span');
-        title.className = 'settings-ip-label';
-        title.innerText = entry.label || (entry.ip === null ? '默认路由' : String(entry.ip));
-        // const detail = document.createElement('span');
-        // detail.className = 'settings-ip-message';
-        // detail.innerText = entry.message || '';
-        textSpan.appendChild(title);
-        // textSpan.appendChild(detail);
-        checkboxLabel.appendChild(checkbox);
-        checkboxLabel.appendChild(textSpan);
-
-        const radioLabel = document.createElement('label');
-        radioLabel.className = 'settings-ip-radio-label';
-        const radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'settings-active-ip';
-        radio.value = token;
-        radio.className = 'settings-ip-radio';
-        if (token === settingsWizard.activeToken) {
-            radio.checked = true;
-        }
-        radio.addEventListener('change', () => {
-            settingsWizard.activeToken = token;
-            settingsWizard.selectedTokens.add(token);
-            checkbox.checked = true;
-        });
-        checkbox.addEventListener('change', () => {
-            if (checkbox.checked) {
-                settingsWizard.selectedTokens.add(token);
-                if (settingsWizard.activeToken === DEFAULT_IP_TOKEN && token !== DEFAULT_IP_TOKEN) {
-                    settingsWizard.activeToken = token;
-                    radio.checked = true;
-                }
-            }
-            else {
-                settingsWizard.selectedTokens.delete(token);
-                if (settingsWizard.activeToken === token) {
-                    settingsWizard.activeToken = DEFAULT_IP_TOKEN;
-                    const defaultRadio = document.querySelector('input[name="settings-active-ip"][value="' + DEFAULT_IP_TOKEN + '"]');
-                    if (defaultRadio) {
-                        defaultRadio.checked = true;
-                    }
-                }
-            }
-        });
-        const radioText = document.createElement('span');
-        radioText.innerText = '设为当前';
-        radioLabel.appendChild(radio);
-        radioLabel.appendChild(radioText);
-
-        row.appendChild(status);
-        row.appendChild(checkboxLabel);
-        row.appendChild(radioLabel);
-        ipList.appendChild(row);
+async function saveSettings(event) {
+  event.preventDefault();
+  const backend = await waitForBackend();
+  const interfaceSettings = collectInterfaceSettings();
+  elements["save-settings-button"].disabled = true;
+  setMessage(elements["settings-message"], "正在保存设置...");
+  try {
+    const result = await backend.update_preferences({
+      gateway: elements["gateway-input"].value,
+      self_service: elements["self-service-input"].value,
+      reconnect_interval: Number(elements["reconnect-interval-input"].value),
+      selected_ips: interfaceSettings.selectedIps,
+      active_ip: interfaceSettings.activeIp,
+      allow_unverified_tls: elements["unverified-tls-toggle"].checked,
+      allow_insecure_http: elements["insecure-http-toggle"].checked,
     });
-    updateSettingsFooterNote();
+    if (!result.ok) {
+      setMessage(elements["settings-message"], result.message, "error");
+      return;
+    }
+    applicationState.config = await backend.get_app_state();
+    renderConfig();
+    elements["settings-dialog"].close();
+    setMessage(elements["form-message"], result.message, "success");
+    await refreshConnection();
+  } catch (error) {
+    setMessage(elements["settings-message"], String(error), "error");
+  } finally {
+    elements["save-settings-button"].disabled = false;
+  }
 }
 
-function saveSettings() {
-    const selectedList = Array.from(settingsWizard.selectedTokens);
-    if (selectedList.length === 0) {
-        settingsWizard.selectedTokens.add(DEFAULT_IP_TOKEN);
-    }
-    let activeToken = settingsWizard.activeToken;
-    if (!settingsWizard.selectedTokens.has(activeToken)) {
-        activeToken = Array.from(settingsWizard.selectedTokens)[0];
-    }
-    const payload = {
-        gateway: settingsWizard.gateway,
-        self_service: settingsWizard.selfService,
-        selected: Array.from(settingsWizard.selectedTokens).map(ipFromToken),
-        active: ipFromToken(activeToken)
-    };
-    window.pywebview.api.update_ip_settings(payload).then((ok) => {
-        if (ok) {
-            closeSettings();
-            setTimeout(() => { showAlert("设置成功！"); }, 320);
-            updateInfo();
-        }
-        else {
-            showAlert("设置失败！");
-        }
-    });
+function togglePasswordVisibility() {
+  const isPassword = elements["password-input"].type === "password";
+  elements["password-input"].type = isPassword ? "text" : "password";
+  elements["password-visibility"].textContent = isPassword ? "隐藏" : "显示";
 }
 
-function refreshSettingsIps() {
-    if (settingsWizard.step !== 'ip') {
-        return;
-    }
-    const inlineButton = document.getElementById('settings-confirm-ips');
-    const refreshButton = document.getElementById('settings-action-refresh');
-    if (inlineButton) {
-        // inlineButton.disabled = true;
-        inlineButton.style.display = "none";
-    }
-    if (refreshButton) {
-        refreshButton.disabled = true;
-    }
-    document.getElementById('settings-probe-status').innerText = '正在重新检查...';
-    window.pywebview.api.probe_gateway_ips(settingsWizard.gateway, settingsWizard.selfService).then((result) => {
-        if (inlineButton) {
-            // inlineButton.disabled = false;
-            inlineButton.style.display = "unset";
-        }
-        if (refreshButton) {
-            refreshButton.disabled = false;
-        }
-        if (!result.ok) {
-            const message = result.error || '重新检查失败';
-            document.getElementById('settings-probe-status').innerText = message;
-            showAlert(message);
-            return;
-        }
-        settingsWizard.probeMeta = result;
-        settingsWizard.results = Array.isArray(result.results) ? result.results : [];
-        settingsWizard.reachableCount = result.reachable_count || 0;
-        initializeSelectionFromProbe(result);
-        document.getElementById('settings-probe-status').innerText = `共检测到 ${settingsWizard.results.length} 个IP，其中 ${settingsWizard.reachableCount} 个可访问。`;
-        renderProbeResults();
-        populateSettingsIpList(settingsWizard.results);
-    }).catch((error) => {
-        if (inlineButton) {
-            // inlineButton.disabled = false;
-            inlineButton.style.display = "unset";
-        }
-        if (refreshButton) {
-            refreshButton.disabled = false;
-        }
-        document.getElementById('settings-probe-status').innerText = '重新检查失败';
-        if (error) {
-            console.error('refreshSettingsIps failed', error);
-        }
-        showAlert('重新检查失败，请稍后再试');
-    });
+function bindEvents() {
+  elements["login-form"].addEventListener("submit", handlePrimaryAction);
+  elements["refresh-button"].addEventListener("click", refreshConnection);
+  elements["interface-select"].addEventListener("change", handleInterfaceChange);
+  elements["auto-login-toggle"].addEventListener("change", handleAutoLoginToggle);
+  elements["auto-start-toggle"].addEventListener("change", handleAutoStartToggle);
+  elements["password-visibility"].addEventListener("click", togglePasswordVisibility);
+  elements["settings-button"].addEventListener("click", openSettings);
+  elements["close-settings-button"].addEventListener("click", () => elements["settings-dialog"].close());
+  elements["cancel-settings-button"].addEventListener("click", () => elements["settings-dialog"].close());
+  elements["settings-form"].addEventListener("submit", saveSettings);
+  elements["probe-button"].addEventListener("click", probeInterfaces);
+  elements["self-service-button"].addEventListener("click", async () => {
+    const backend = await waitForBackend();
+    await backend.start_self_service(interfaceFromToken(activeInterfaceValue()));
+  });
 }
 
-function startSelfService() {
-    window.pywebview.api.start_self_service(active_ip === null ? null : active_ip);
-}
-
-function showAlert(text, icon) {
-    if (icon) {
-        document.querySelector("#alert-mask img").src = icon;
-    }
-    else {
-        document.querySelector("#alert-mask img").src = "icons/info.png";
-    }
-    showConfirmAlert(text, null);
-}
-
-function showConfirmAlert(text, callback, icon) {
-    let ele = document.getElementsByClassName("alert-cancle");
-    if (icon) {
-        document.querySelector("#alert-mask img").src = icon;
-    }
-    else {
-        document.querySelector("#alert-mask img").src = "icons/info.png";
-    }
-    if (callback) {
-        ele[0].style.display = "block";
-        ele[1].style.display = "block";
-        document.getElementById("confirm-alert-button").onclick = () => {
-            closeAlert();
-            callback();
-        };
-    }
-    else {
-        ele[0].style.display = "none";
-        ele[1].style.display = "none";
-        document.getElementById("confirm-alert-button").onclick = closeAlert;
-    }
-    let mask = document.getElementById("alert-mask");
-    document.getElementById("alert-text").children[0].innerText = text;
-    mask.style.display = "block";
-    setTimeout(function () {
-        mask.style.opacity = "1";
-    }, 20);
-}
-
-
-function closeAlert() {
-    let mask = document.getElementById("alert-mask");
-    if (mask.style.opacity != "0") {
-        mask.style.opacity = "0";
-        setTimeout(function () {
-            if (mask.style.opacity == "0") {
-                mask.style.display = "none";
-            }
-        }, 500);
-    }
-}
-
-function showInput(text, callback, inputText = "", ensureText = true) {
-    let mask = document.getElementById("input-mask");
-    let input = document.getElementById("input-input");
-    input.value = inputText;
-    if (ensureText) {
-        document.getElementById("input-text").children[0].innerText = text;
-    }
-    else {
-        document.getElementById("input-text").children[0].innerHTML = text
-    }
-    document.getElementById("input-confirm").onclick = function () {
-        callback(input.value);
-        closeInput();
-    }
-    mask.style.display = "block";
-    setTimeout(function () {
-        mask.style.opacity = "1";
-    }, 20);
-}
-
-function closeInput() {
-    let mask = document.getElementById("input-mask");
-    if (mask.style.opacity != "0") {
-        mask.style.opacity = "0";
-        setTimeout(function () {
-            if (mask.style.opacity == "0") {
-                mask.style.display = "none";
-            }
-        }, 500);
-    }
-    resetSettingsWizardState();
-}
-
-function proceedSettingsStep() {
-    if (settingsWizard.step === 'gateway') {
-        const gatewayInput = document.getElementById('settings-gateway').value.trim();
-        const selfInput = document.getElementById('settings-self-service').value.trim();
-        if (!gatewayInput) {
-            showAlert('请先填写网关地址');
-            return;
-        }
-        settingsWizard.gateway = gatewayInput;
-        settingsWizard.selfService = selfInput;
-        document.getElementById('settings-probe-status').innerText = '正在检查连通性...';
-        // document.getElementById('settings-probe-results').innerHTML = '';
-        document.getElementById('settings-probe-results').style.display = 'none';
-        document.getElementById('settings-action-next').disabled = true;
-        window.pywebview.api.probe_gateway_ips(gatewayInput, selfInput).then((result) => {
-            document.getElementById('settings-action-next').disabled = false;
-            if (!result.ok) {
-                document.getElementById('settings-probe-status').innerText = result.error || '网关检查失败';
-                return;
-            }
-            settingsWizard.probeMeta = result;
-            settingsWizard.results = Array.isArray(result.results) ? result.results : [];
-            settingsWizard.reachableCount = result.reachable_count || 0;
-            initializeSelectionFromProbe(result);
-            document.getElementById('settings-probe-status').innerText = `共检测到 ${settingsWizard.results.length} 个IP，其中 ${settingsWizard.reachableCount} 个可访问。`;
-            renderProbeResults();
-            settingsWizard.step = 'ip';
-            renderIpSelectionStep();
-        });
-    } else if (settingsWizard.step === 'ip') {
-        saveSettings();
-    }
-}
-
-function initializeSelectionFromProbe(result) {
-    const availableTokens = new Set();
-    if (Array.isArray(result.results)) {
-        result.results.forEach((item) => {
-            availableTokens.add(tokenForIp(item.ip));
-        });
-    }
-    const nextSelected = new Set();
-    if (settingsWizard.selectedTokens instanceof Set && settingsWizard.selectedTokens.size > 0) {
-        settingsWizard.selectedTokens.forEach((token) => {
-            if (availableTokens.has(token)) {
-                nextSelected.add(token);
-            }
-        });
-    }
-    if (nextSelected.size === 0 && Array.isArray(result.results)) {
-        result.results.forEach((item) => {
-            if (item.reachable) {
-                nextSelected.add(tokenForIp(item.ip));
-            }
-        });
-    }
-    if (nextSelected.size === 0) {
-        nextSelected.add(DEFAULT_IP_TOKEN);
-    }
-    settingsWizard.selectedTokens = nextSelected;
-    if (!availableTokens.has(settingsWizard.activeToken) || !settingsWizard.activeToken) {
-        settingsWizard.activeToken = Array.from(settingsWizard.selectedTokens)[0] || DEFAULT_IP_TOKEN;
-    }
-    if (!settingsWizard.selectedTokens.has(settingsWizard.activeToken)) {
-        settingsWizard.selectedTokens.add(settingsWizard.activeToken);
-    }
-}
-
-function renderProbeResults() {
-    const container = document.getElementById('settings-probe-results');
-    document.getElementById('settings-probe-results').style.display = 'auto';
-    if (!container) {
-        return;
-    }
-    container.innerHTML = '';
-    if (!settingsWizard.results.length) {
-        const empty = document.createElement('div');
-        empty.className = 'settings-probe-empty';
-        empty.innerText = '未检测到任何IP地址或无法测试。';
-        container.appendChild(empty);
-        return;
-    }
-    settingsWizard.results.forEach((entry) => {
-        const row = document.createElement('div');
-        row.className = 'settings-probe-item';
-        const label = entry.label || (entry.ip === null ? '默认路由' : String(entry.ip));
-        const status = document.createElement('span');
-        status.className = 'settings-probe-status';
-        status.dataset.state = entry.reachable ? 'ok' : 'fail';
-        status.innerText = entry.reachable ? '可访问' : '不可访问';
-        const detail = document.createElement('span');
-        detail.className = 'settings-probe-message';
-        detail.innerText = entry.message || '';
-        row.appendChild(document.createTextNode(label));
-        row.appendChild(status);
-        row.appendChild(detail);
-        container.appendChild(row);
-    });
-}
-
-function renderIpSelectionStep() {
-    settingsWizard.step = 'ip';
-    document.getElementById('settings-step-gateway').classList.remove('active');
-    document.getElementById('settings-step-ip').classList.add('active');
-    document.getElementById('settings-action-next').classList.add('hidden');
-    document.getElementById('settings-action-save').classList.remove('hidden');
-    document.getElementById('settings-action-refresh').classList.remove('hidden');
-    document.getElementById('settings-action-back').classList.remove('hidden');
-    // document.getElementById('settings-confirm-ips').disabled = false;
-    document.getElementById('settings-confirm-ips').style.display = "unset";
-    populateSettingsIpList(settingsWizard.results);
-}
-
-function goBackToGatewayStep() {
-    if (settingsWizard.step !== 'ip') {
-        return;
-    }
-    settingsWizard.step = 'gateway';
-    document.getElementById('settings-step-gateway').classList.add('active');
-    document.getElementById('settings-step-ip').classList.remove('active');
-    document.getElementById('settings-action-next').classList.remove('hidden');
-    document.getElementById('settings-action-save').classList.add('hidden');
-    document.getElementById('settings-action-refresh').classList.add('hidden');
-    document.getElementById('settings-action-back').classList.add('hidden');
-    document.getElementById('settings-action-next').disabled = false;
-}
-
-function updateSettingsFooterNote() {
-    const note = document.getElementById('settings-ip-note');
-    if (!note) {
-        return;
-    }
-    const total = settingsWizard.results.length;
-    const ok = settingsWizard.results.filter(item => item.reachable).length;
-    note.innerText = `${ok} / ${total}`;
-    // note.innerText = `共检测到 ${total} 个IP，其中 ${ok} 个可访问。请至少选择一个可访问的IP。`;
-}
+document.addEventListener("DOMContentLoaded", async () => {
+  cacheElements();
+  bindEvents();
+  await loadApplication();
+});

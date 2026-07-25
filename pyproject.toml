@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "srunpy"
+dynamic = ["version"]
+description = "适用于深澜网关的校园网第三方登录器"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "GPL-3.0-only"
+authors = [
+    { name = "HofNature" },
+]
+keywords = [
+    "gateway",
+    "login",
+    "logout",
+    "network",
+    "srun",
+    "srun-client",
+    "srun-gui",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "packaging>=24.2",
+    "requests>=2.32.4,<3",
+    "Pillow>=10; sys_platform == 'win32'",
+    "pycryptodome>=3.20; sys_platform == 'win32'",
+    "pystray>=0.19.5; sys_platform == 'win32'",
+    "pywebview>=5; sys_platform == 'win32'",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+build = [
+    "nuitka",
+]
+dev = [
+    "build",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "twine",
+]
+qt = [
+    "pywebview[qt]>=5; sys_platform == 'win32'",
+]
+
+[project.urls]
+Homepage = "https://github.com/HofNature/SRunPy-GUI"
+Issues = "https://github.com/HofNature/SRunPy-GUI/issues"
+Repository = "https://github.com/HofNature/SRunPy-GUI"
+
+[project.scripts]
+srunpy = "srunpy.entry:Main"
+srunpy-cli = "srunpy.entry:Cli"
+
+[project.gui-scripts]
+srunpy-gui = "srunpy.entry:Gui"
+
+[tool.setuptools.dynamic]
+version = { attr = "srunpy.version.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["srunpy*"]
+
+[tool.setuptools.package-data]
+"srunpy.html" = [
+    "*.css",
+    "*.html",
+    "*.js",
+    "*.png",
+    "*.ttf",
+    "icons/*",
+]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"srunpy/__init__.py" = ["F401"]

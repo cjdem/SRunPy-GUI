@@ -1,277 +1,282 @@
-<html>
+<!doctype html>
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, user-scalable=no" />
-    <title>校园网登录器</title>
-    <link type="images/png" rel="shortcut icon" href="/favicon.png" />
-    <script src="./script.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
+    />
+    <title>SRunPy 校园网控制台</title>
+    <link rel="icon" href="./favicon.png" />
     <link rel="stylesheet" href="./style.css" />
-    <!--
-        禁止缓存
-        -->
-    <meta http-equiv="Expires" content="0" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <meta http-equiv="Cache-control" content="no-cache" />
-    <meta http-equiv="Cache" content="no-cache" />
+    <script src="./script.js" defer></script>
   </head>
-
   <body>
-    <div class="title-bar">
-      <div class="title-bar-drag-region pywebview-drag-region">
-        <div class="program-icon"></div>
-        <span class="title-bar-text">校园网登录器</span>
-      </div>
-      <div class="title-bar-buttons">
-        <div
-          class="toolbar-item"
-          id="minimize-button"
-          title="最小化"
-          onclick="window.pywebview.api.minimize_window()"
-        ><div class="minimize-icon"></div></div>
-        <!-- <div
-          class="toolbar-item"
-          id="maximize-button"
-          title="最大化"
-          onclick="window.pywebview.api.maximize_window()"
-        ></div> -->
-        <div
-          class="toolbar-item"
-          id="close-button"
-          title="收至任务栏"
-          onclick="window.pywebview.api.close_window()"
-        ><div class="close-icon"></div></div>
-      </div>
-    </div>
-    <div class="app-container">
-      <div class="main-container-h">
-        <div class="toolbar">
-          <div
-            class="toolbar-item"
-            id="toolbar-item-self-service"
-            title="自服务"
-            onclick="startSelfService()"
-          ></div>
-          <!-- <div class="toolbar-item" id="toolbar-item-browser" title="网页打开" onclick="window.pywebview.api.webbrowser_open('https://gw.buaa.edu.cn')"></div> -->
-          <div
-            class="toolbar-item"
-            id="toolbar-item-refresh"
-            title="刷新"
-            onclick="updateInfo()"
-          ></div>
-          <div class="flex-span"></div>
-          <div
-            class="toolbar-item"
-            id="toolbar-item-about"
-            title="关于软件"
-            onclick="do_Update()"
-          ></div>
-          <div
-            class="toolbar-item"
-            id="toolbar-item-settings"
-            title="设置"
-            onclick="openSettings()"
-          ></div>
-          <div
-            class="toolbar-item"
-            id="toolbar-item-exit"
-            title="退出软件"
-            onclick="window.pywebview.api.exit_application()"
-          ></div>
-        </div>
-        <div class="main-container-v">
-          <div class="settings-bar">
-            <div class="ip-selector-bar">
-              <span>联网接口</span>
-              <select id="ip-selector" aria-label="选择本机IP地址"></select>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <main id="main-content" class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <img class="brand-logo" src="./icons/logo.png" alt="" />
+          <div class="brand-copy">
+            <div class="brand-line">
+              <h1>SRunPy</h1>
+              <span class="product-tag">校园网控制台</span>
             </div>
-          </div>
-          <div class="login-pannel" data-state="offline">
-            <div class="login-info" id="login-off">
-              <div class="flex-span"></div>
-              <div class="input-item">
-                <div class="input-text">用户名</div>
-                <input type="text" id="username" placeholder="用户名" />
-              </div>
-              <div class="flex-span"></div>
-              <div class="input-item">
-                <div class="input-text">密码</div>
-                <input type="password" id="password" placeholder="密码" />
-              </div>
-              <div class="flex-span"></div>
-            </div>
-            <div class="login-info" id="login-on">
-              <div class="flex-span"></div>
-              <div class="info-item">
-                <div class="info-title">用户名</div>
-                <div class="info-text" id="username-text">用户名</div>
-              </div>
-              <div class="flex-span"></div>
-              <div class="info-item">
-                <div class="info-title">已用流量</div>
-                <div class="info-text" id="used-flow">0</div>
-              </div>
-              <div class="flex-span"></div>
-              <div class="info-item">
-                <div class="info-title">账户余额</div>
-                <div class="info-text" id="balance-last">0</div>
-              </div>
-              <div class="flex-span"></div>
-              <div class="info-item">
-                <div class="info-title">IP地址</div>
-                <div class="info-text" id="ip-address">127.0.0.1</div>
-              </div>
-              <div class="flex-span"></div>
-            </div>
-            <div class="login-form">
-              <button
-                class="login-button"
-                onclick="login()"
-                data-loggedin="True"
-                aria-label="执行登录或退出"
-              ></button>
-            </div>
-          </div>
-          <div class="settings-bar">
-            <div class="settings-item" onclick="">
-              <div class="flex-span"></div>
-              <div
-                class="switch"
-                id="auto-login"
-                data-state="selected"
-                onclick="set_auto_login()"
-              >
-                <div class="switch-round"></div>
-              </div>
-              <span class="settings-text">断线重连</span>
-              <div class="flex-span"></div>
-            </div>
-            <div class="settings-item" onclick="">
-              <div class="flex-span"></div>
-              <div
-                class="switch"
-                id="auto-start"
-                data-state="unselected"
-                onclick="set_auto_start()"
-              >
-                <div class="switch-round"></div>
-              </div>
-              <span class="settings-text">开机自启</span>
-              <div class="flex-span"></div>
-            </div>
+            <p id="version-label">正在连接客户端服务...</p>
           </div>
         </div>
-      </div>
-      <div id="alert-mask">
-        <div class="alert-content">
-          <img src="icons/info.png" alt="提示图标" />
-          <div id="alert-text">
-            <span>这是一个提示框</span>
+
+        <div class="topbar-actions">
+          <span id="live-badge" class="live-badge" data-state="loading">
+            <span class="live-dot" aria-hidden="true"></span>
+            <span id="live-badge-text">检查中</span>
+          </span>
+          <button id="refresh-button" class="icon-button" type="button" title="刷新连接状态">
+            <span class="refresh-glyph" aria-hidden="true">↻</span>
+            <span class="sr-only">刷新连接状态</span>
+          </button>
+          <button id="settings-button" class="secondary-button" type="button">客户端设置</button>
+        </div>
+      </header>
+
+      <section id="status-panel" class="status-hero" data-state="loading" aria-live="polite">
+        <div class="status-main">
+          <div class="status-icon" aria-hidden="true">
+            <span class="status-pulse"></span>
           </div>
-          <div class="alert-bar">
-            <div class="flex-span"></div>
-            <button id="confirm-alert-button">确定</button>
-            <div class="flex-span"></div>
-            <button class="alert-cancle" onclick="closeAlert()">取消</button>
-            <div class="alert-cancle flex-span"></div>
+          <div class="status-copy">
+            <p class="section-kicker">NETWORK STATUS</p>
+            <h2 id="status-title">正在检查网络</h2>
+            <p id="status-message">正在连接校园网网关，请稍候...</p>
           </div>
         </div>
-      </div>
-      <div id="input-mask">
-        <div class="input-content">
-          <img src="icons/info.png" alt="提示图标" />
-          <div id="input-text">
-            <span>这是一个提示框</span>
-          </div>
-          <input
-            id="input-input"
-            placeholder="请输入内容"
-            aria-label="输入内容"
-          />
-          <div class="flex-span"></div>
-          <div class="alert-bar">
-            <div class="flex-span"></div>
-            <button id="input-confirm">确定</button>
-            <div class="flex-span"></div>
-            <button onclick="closeInput()">取消</button>
-            <div class="flex-span"></div>
+
+        <div class="status-controls">
+          <label class="compact-field" for="interface-select">
+            <span>活动线路</span>
+            <select id="interface-select" aria-label="选择活动网络线路"></select>
+          </label>
+          <div class="status-meta">
+            <span>最近检查</span>
+            <strong id="last-updated-label">--:--:--</strong>
           </div>
         </div>
-      </div>
-      <div id="settings-mask">
-        <div class="settings-content">
-          <img src="icons/setting.png" alt="设置" />
-          <div id="settings-step-gateway" class="settings-step">
-            <div class="settings-section row-section">
-              <span>深澜网关</span>
+      </section>
+
+      <section class="dashboard-grid" aria-label="网络控制面板">
+        <article class="panel account-panel">
+          <div class="panel-header">
+            <div>
+              <p class="section-kicker">AUTHENTICATION</p>
+              <h2 id="account-title">账号认证</h2>
+            </div>
+            <span id="credential-badge" class="credential-badge">未保存凭据</span>
+          </div>
+
+          <form id="login-form" novalidate>
+            <label class="field" for="username-input">
+              <span>校园网用户名</span>
               <input
-                id="settings-gateway"
-                placeholder="例如 gw.buaa.edu.cn"
-                aria-label="深澜网关"
+                id="username-input"
+                name="username"
+                type="text"
+                autocomplete="username"
+                placeholder="请输入用户名"
               />
-            </div>
-            <div class="settings-section row-section">
-              <span>自服务地址</span>
-              <input
-                id="settings-self-service"
-                placeholder="例如 zfw.buaa.edu.cn"
-                aria-label="自服务地址"
-              />
-            </div>
-            <div class="settings-section">
-              <!-- <span>连通性检查</span> -->
-              <div
-                id="settings-probe-status"
-                class="settings-probe-status-text"
-              >
-                点击下一步将检查配置正确性
-              </div>
-              <div
-                id="settings-probe-results"
-                class="settings-probe-results"
-              ></div>
-            </div>
-          </div>
-          <div id="settings-step-ip" class="settings-step">
-            <div class="settings-section">
-              <div class="settings-ips-header">
-                <span>选择可用IP</span>
-                <div id="settings-ip-note" class="settings-ip-note"></div>
-              </div>
-              <div id="settings-ip-list"></div>
+            </label>
+
+            <label class="field" for="password-input">
+              <span>登录密码</span>
+              <span class="password-field">
+                <input
+                  id="password-input"
+                  name="password"
+                  type="password"
+                  autocomplete="current-password"
+                  placeholder="已保存凭据时可留空"
+                />
+                <button id="password-visibility" type="button" aria-label="显示密码">显示</button>
+              </span>
+            </label>
+
+            <p id="form-message" class="form-message" aria-live="polite"></p>
+            <button id="primary-action" class="primary-button" type="submit">
+              登录校园网
+            </button>
+          </form>
+
+          <div class="security-note">
+            <span class="security-mark" aria-hidden="true">DP</span>
+            <div>
+              <strong>凭据由 Windows DPAPI 保护</strong>
+              <p id="security-mode-label">默认使用经过证书验证的 HTTPS</p>
             </div>
           </div>
-          <div class="settings-actions">
-            <button id="settings-action-next" onclick="proceedSettingsStep()">
-              下一步
-            </button>
-            <button
-              id="settings-action-save"
-              class="hidden"
-              onclick="saveSettings()"
-            >
-              保存
-            </button>
-            <button
-              id="settings-action-refresh"
-              class="hidden"
-              onclick="refreshSettingsIps()"
-            >
-              刷新结果
-            </button>
-            <button
-              id="settings-action-back"
-              class="hidden"
-              onclick="goBackToGatewayStep()"
-            >
-              上一步
-            </button>
-            <button id="settings-confirm-ips" onclick="refreshSettingsIps()">
-              重新检查
-            </button>
-            <button onclick="closeSettings()">关闭</button>
-          </div>
+        </article>
+
+        <section class="metrics-grid" aria-label="实时连接指标">
+          <article class="metric-card metric-identity">
+            <div class="metric-heading">
+              <span>在线账号</span>
+              <span class="metric-symbol" aria-hidden="true">ID</span>
+            </div>
+            <strong id="metric-username" class="metric-value">--</strong>
+            <p>当前网关认证身份</p>
+          </article>
+
+          <article class="metric-card metric-address">
+            <div class="metric-heading">
+              <span>在线 IP</span>
+              <span class="metric-symbol" aria-hidden="true">IP</span>
+            </div>
+            <strong id="metric-ip" class="metric-value metric-mono">--</strong>
+            <p>网关识别的客户端地址</p>
+          </article>
+
+          <article class="metric-card metric-traffic">
+            <div class="metric-heading">
+              <span>已用流量</span>
+              <span class="metric-symbol" aria-hidden="true">TX</span>
+            </div>
+            <strong id="metric-traffic" class="metric-value">--</strong>
+            <p>本次账户累计流量</p>
+          </article>
+
+          <article class="metric-card metric-balance">
+            <div class="metric-heading">
+              <span>账户余额</span>
+              <span class="metric-symbol" aria-hidden="true">¥</span>
+            </div>
+            <strong id="metric-balance" class="metric-value">--</strong>
+            <p>网关返回的可用余额</p>
+          </article>
+        </section>
+      </section>
+
+      <section class="automation-panel" aria-label="自动化设置">
+        <div class="automation-intro">
+          <p class="section-kicker">AUTOMATION</p>
+          <h2>后台自动化</h2>
+          <p>保持校园网在线，并在 Windows 登录后自动运行。</p>
         </div>
-      </div>
-    </div>
+
+        <label class="automation-item">
+          <span class="automation-copy">
+            <strong>断线自动重连</strong>
+            <small>线路可达但掉线时自动认证</small>
+          </span>
+          <input id="auto-login-toggle" class="toggle" type="checkbox" role="switch" />
+        </label>
+
+        <label class="automation-item">
+          <span class="automation-copy">
+            <strong>开机自动启动</strong>
+            <small>登录 Windows 后驻留系统托盘</small>
+          </span>
+          <input id="auto-start-toggle" class="toggle" type="checkbox" role="switch" />
+        </label>
+      </section>
+
+      <footer class="app-footer">
+        <div class="footer-network">
+          <span class="footer-dot" aria-hidden="true"></span>
+          <span id="gateway-label">网关：--</span>
+        </div>
+        <button id="self-service-button" class="text-button" type="button">打开校园网自服务</button>
+      </footer>
+    </main>
+
+    <dialog id="settings-dialog" class="settings-dialog">
+      <form id="settings-form" method="dialog">
+        <header class="dialog-header">
+          <div>
+            <p class="section-kicker">CLIENT SETTINGS</p>
+            <h2>客户端设置</h2>
+            <p>配置网关、活动线路和兼容性选项。</p>
+          </div>
+          <button id="close-settings-button" class="icon-button close-button" type="button" aria-label="关闭设置">×</button>
+        </header>
+
+        <div class="dialog-content">
+          <section class="settings-section">
+            <div class="settings-section-title">
+              <span class="step-number">01</span>
+              <div>
+                <h3>网关地址</h3>
+                <p>使用学校提供的深澜认证与自服务地址。</p>
+              </div>
+            </div>
+            <div class="settings-fields">
+              <label class="field" for="gateway-input">
+                <span>深澜网关</span>
+                <input id="gateway-input" type="text" placeholder="例如 gw.example.edu.cn" />
+              </label>
+              <label class="field" for="self-service-input">
+                <span>自服务地址</span>
+                <input id="self-service-input" type="text" placeholder="例如 service.example.edu.cn" />
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section-title settings-title-action">
+              <span class="step-number">02</span>
+              <div>
+                <h3>网络接口</h3>
+                <p>选择后台监控线路，并指定当前操作线路。</p>
+              </div>
+              <button id="probe-button" class="secondary-button" type="button">检查连通性</button>
+            </div>
+            <div id="interface-options" class="interface-options"></div>
+            <p id="probe-message" class="form-message" aria-live="polite"></p>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section-title">
+              <span class="step-number">03</span>
+              <div>
+                <h3>重连与安全</h3>
+                <p>安全选项默认关闭，仅为旧网关提供兼容能力。</p>
+              </div>
+            </div>
+
+            <label class="interval-row" for="reconnect-interval-input">
+              <span>
+                <strong>重连检查间隔</strong>
+                <small>建议保持 5 至 30 秒</small>
+              </span>
+              <span class="number-field">
+                <input id="reconnect-interval-input" type="number" min="3" max="300" />
+                <span>秒</span>
+              </span>
+            </label>
+
+            <label class="risk-option">
+              <input id="unverified-tls-toggle" type="checkbox" />
+              <span>
+                <strong>允许未经验证的 HTTPS 证书</strong>
+                <small>仅在学校使用自签名证书时开启，可能降低连接安全性。</small>
+              </span>
+            </label>
+
+            <label class="risk-option risk-critical">
+              <input id="insecure-http-toggle" type="checkbox" />
+              <span>
+                <strong>允许明文 HTTP 兼容模式</strong>
+                <small>认证数据可能被监听或篡改，只用于无法使用 HTTPS 的旧网关。</small>
+              </span>
+            </label>
+          </section>
+        </div>
+
+        <p id="settings-message" class="form-message dialog-message" aria-live="polite"></p>
+        <footer class="dialog-actions">
+          <button id="cancel-settings-button" class="secondary-button" type="button">取消</button>
+          <button id="save-settings-button" class="primary-button save-button" type="submit">保存并应用</button>
+        </footer>
+      </form>
+    </dialog>
   </body>
 </html>

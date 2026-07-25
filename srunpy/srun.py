@@ -11,14 +11,26 @@ import hashlib
 import hmac
 import json
 import math
-import re
 import time
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
+from requests.exceptions import RequestException, SSLError, Timeout
 from urllib3.poolmanager import PoolManager
+
+from srunpy.errors import (
+    AlreadyOnlineError,
+    AuthenticationRejectedError,
+    GatewayProtocolError,
+    GatewayUnavailableError,
+    NotOnlineError,
+    RequestTimeoutError,
+    SrunError,
+    TLSVerificationError,
+)
 
 
 def get_md5(password: str, token: str) -> str:
@@ -96,15 +108,18 @@ def sencode(msg: str, key: bool) -> List[int]:
     Returns / 返回:
         List of encoded integers / 编码整数列表
     """
-    l = len(msg)
-    pwd = []
-    for i in range(0, l, 4):
-        pwd.append(
-            ordat(msg, i) | ordat(msg, i + 1) << 8 | ordat(msg, i + 2) << 16
-            | ordat(msg, i + 3) << 24)
+    message_length = len(msg)
+    encoded_words = []
+    for character_index in range(0, message_length, 4):
+        encoded_words.append(
+            ordat(msg, character_index)
+            | ordat(msg, character_index + 1) << 8
+            | ordat(msg, character_index + 2) << 16
+            | ordat(msg, character_index + 3) << 24
+        )
     if key:
-        pwd.append(l)
-    return pwd
+        encoded_words.append(message_length)
+    return encoded_words
 
 
 def lencode(msg: List[int], key: bool) -> Optional[str]:
@@ -119,18 +134,23 @@ def lencode(msg: List[int], key: bool) -> Optional[str]:
     Returns / 返回:
         Decoded string or None / 解码的字符串或 None
     """
-    l = len(msg)
-    ll = (l - 1) << 2
+    word_count = len(msg)
+    decoded_length = (word_count - 1) << 2
     if key:
-        m = msg[l - 1]
-        if m < ll - 3 or m > ll:
+        message_length = msg[word_count - 1]
+        if message_length < decoded_length - 3 or message_length > decoded_length:
             return None
-        ll = m
-    for i in range(0, l):
-        msg[i] = chr(msg[i] & 0xff) + chr(msg[i] >> 8 & 0xff) + chr(
-            msg[i] >> 16 & 0xff) + chr(msg[i] >> 24 & 0xff)
+        decoded_length = message_length
+    for word_index in range(word_count):
+        encoded_word = msg[word_index]
+        msg[word_index] = (
+            chr(encoded_word & 0xff)
+            + chr(encoded_word >> 8 & 0xff)
+            + chr(encoded_word >> 16 & 0xff)
+            + chr(encoded_word >> 24 & 0xff)
+        )
     if key:
-        return "".join(msg)[0:ll]
+        return "".join(msg)[:decoded_length]
     return "".join(msg)
 
 
@@ -183,6 +203,42 @@ def get_xencode(msg: str, key: str) -> str:
     return lencode(pwd, False)
 
 
+def parse_json_or_jsonp(raw_response: str) -> Dict[str, Any]:
+    """Parse a JSON or JSONP object returned by a Srun gateway.
+
+    A malformed payload is a protocol error rather than an offline result. This
+    distinction allows the desktop UI to give a useful diagnostic instead of
+    suggesting that the computer is simply outside the campus network.
+    """
+    response_text = (raw_response or "").strip()
+    if not response_text:
+        raise GatewayProtocolError("网关返回了空响应")
+
+    json_text = response_text
+    callback_start = response_text.find("(")
+    callback_end = response_text.rfind(")")
+    if callback_start >= 0 and callback_end > callback_start:
+        json_text = response_text[callback_start + 1:callback_end].strip()
+
+    try:
+        payload = json.loads(json_text)
+    except (TypeError, ValueError) as error:
+        raise GatewayProtocolError("网关返回了无法解析的 JSON/JSONP 响应") from error
+
+    if not isinstance(payload, dict):
+        raise GatewayProtocolError("网关响应必须是 JSON 对象")
+    return payload
+
+
+@dataclass(frozen=True)
+class _RequestCandidate:
+    """One explicitly allowed transport candidate for a gateway request."""
+
+    base_url: str
+    verify_tls: bool
+    use_host_header: bool = False
+
+
 class SourceIPAdapter(HTTPAdapter):
     """
     HTTP Adapter for binding requests to a specific source IP address.
@@ -230,9 +286,17 @@ class Srun_Py:
     该类处理与深澜网关系统的认证。
     """
 
-    def __init__(self, srun_host: str = 'gw.buaa.edu.cn',
-                 host_ip: str = '10.200.21.4',
-                 client_ip: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        srun_host: str = "gw.buaa.edu.cn",
+        host_ip: str = "10.200.21.4",
+        client_ip: Optional[str] = None,
+        *,
+        request_timeout: Tuple[float, float] = (3.0, 5.0),
+        allow_unverified_tls: bool = False,
+        allow_insecure_http: bool = False,
+        trust_environment: bool = False,
+    ) -> None:
         """
         Initialize Srun client.
         初始化深澜客户端。
@@ -242,31 +306,144 @@ class Srun_Py:
             host_ip: Gateway IP address / 网关 IP 地址
             client_ip: Client IP address to bind (optional) / 要绑定的客户端 IP（可选）
         """
-        self.srun_host = srun_host
-        self.init_url = f"https://{srun_host}"
-        self.get_ip_api = f'https://{srun_host}/cgi-bin/rad_user_info?callback=JQuery'
-        self.get_ip_api_ip = f'https://{host_ip}/cgi-bin/rad_user_info?callback=JQuery'
-        self.get_challenge_api = f"https://{srun_host}/cgi-bin/get_challenge"
-        self.get_challenge_api_ip = f"https://{host_ip}/cgi-bin/get_challenge"
-        self.srun_portal_api = f"https://{srun_host}/cgi-bin/srun_portal"
-        self.srun_portal_api_ip = f"https://{host_ip}/cgi-bin/srun_portal"
-        self.rad_user_dm_api = f"https://{srun_host}/cgi-bin/rad_user_dm"
-        self.rad_user_dm_api_ip = f"https://{host_ip}/cgi-bin/rad_user_dm"
+        self.srun_host = self._normalize_host(srun_host or host_ip)
+        self.host_ip = self._normalize_host(host_ip or self.srun_host)
+        self.init_url = f"https://{self.srun_host}"
+        self.get_ip_api = f"{self.init_url}/cgi-bin/rad_user_info?callback=JQuery"
+        self.get_ip_api_ip = f"https://{self.host_ip}/cgi-bin/rad_user_info?callback=JQuery"
+        self.get_challenge_api = f"{self.init_url}/cgi-bin/get_challenge"
+        self.get_challenge_api_ip = f"https://{self.host_ip}/cgi-bin/get_challenge"
+        self.srun_portal_api = f"{self.init_url}/cgi-bin/srun_portal"
+        self.srun_portal_api_ip = f"https://{self.host_ip}/cgi-bin/srun_portal"
+        self.rad_user_dm_api = f"{self.init_url}/cgi-bin/rad_user_dm"
+        self.rad_user_dm_api_ip = f"https://{self.host_ip}/cgi-bin/rad_user_dm"
         self.header = {
-            'Host': srun_host,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0'
+            "Host": self.srun_host,
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 "
+                "Safari/537.36 Edg/122.0.0.0"
+            ),
         }
-        self.n = '200'
-        self.type = '1'
-        self.ac_id = '1'
+        self.n = "200"
+        self.type = "1"
+        self.ac_id = "1"
         self.enc = "srun_bx1"
         self._ALPHA = "LVoJPiCN2R8G90yg+hmFHuacZ1OWMnrsSTXkYpUq/3dlbfKwv6xztjI7DeBE45QA"
         self.client_ip = client_ip
+        self.request_timeout = request_timeout
+        self.allow_unverified_tls = allow_unverified_tls
+        self.allow_insecure_http = allow_insecure_http
+        self.last_error: Optional[SrunError] = None
         self.session = requests.Session()
+        self.session.trust_env = trust_environment
         if self.client_ip:
             adapter = SourceIPAdapter(self.client_ip)
-            self.session.mount('http://', adapter)
-            self.session.mount('https://', adapter)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
+
+    @staticmethod
+    def _normalize_host(host: str) -> str:
+        """Return a host name without a URL scheme, path, or trailing slash."""
+        normalized_host = (host or "").strip()
+        if "://" in normalized_host:
+            parsed_host = urlparse(normalized_host).hostname
+            normalized_host = parsed_host or ""
+        else:
+            normalized_host = normalized_host.split("/", 1)[0]
+        if not normalized_host:
+            raise ValueError("网关地址不能为空")
+        return normalized_host
+
+    def _build_request_candidates(self) -> List[_RequestCandidate]:
+        """Build the ordered transports explicitly enabled for this client."""
+        candidates = [_RequestCandidate(f"https://{self.srun_host}", verify_tls=True)]
+
+        if self.allow_unverified_tls:
+            unverified_host = self.host_ip or self.srun_host
+            candidates.append(
+                _RequestCandidate(
+                    f"https://{unverified_host}",
+                    verify_tls=False,
+                    use_host_header=unverified_host != self.srun_host,
+                )
+            )
+
+        if self.allow_insecure_http:
+            candidates.append(_RequestCandidate(f"http://{self.srun_host}", verify_tls=True))
+            if self.host_ip != self.srun_host:
+                candidates.append(
+                    _RequestCandidate(
+                        f"http://{self.host_ip}",
+                        verify_tls=True,
+                        use_host_header=True,
+                    )
+                )
+
+        unique_candidates: List[_RequestCandidate] = []
+        for candidate in candidates:
+            if candidate not in unique_candidates:
+                unique_candidates.append(candidate)
+        return unique_candidates
+
+    def _request(
+        self,
+        path: str,
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        allow_redirects: bool = True,
+    ) -> requests.Response:
+        """Send a GET request using only explicitly enabled transport fallbacks."""
+        last_error: Optional[SrunError] = None
+        normalized_path = path if path.startswith("/") else f"/{path}"
+
+        for candidate in self._build_request_candidates():
+            request_headers = {"User-Agent": self.header["User-Agent"]}
+            if candidate.use_host_header:
+                request_headers["Host"] = self.srun_host
+
+            try:
+                response = self.session.get(
+                    f"{candidate.base_url}{normalized_path}",
+                    params=params,
+                    headers=request_headers,
+                    timeout=self.request_timeout,
+                    verify=candidate.verify_tls,
+                    allow_redirects=allow_redirects,
+                )
+                response.raise_for_status()
+                self.last_error = None
+                return response
+            except Timeout as error:
+                last_error = RequestTimeoutError(
+                    f"连接网关 {self.srun_host} 超时，请检查网络或网关设置"
+                )
+                last_error.__cause__ = error
+            except SSLError as error:
+                last_error = TLSVerificationError(
+                    f"无法验证网关 {self.srun_host} 的 HTTPS 证书"
+                )
+                last_error.__cause__ = error
+            except RequestException as error:
+                last_error = GatewayUnavailableError(
+                    f"无法连接网关 {self.srun_host}"
+                )
+                last_error.__cause__ = error
+
+        self.last_error = last_error
+        if last_error is not None:
+            raise last_error
+        raise GatewayUnavailableError(f"没有可用于访问 {self.srun_host} 的连接方式")
+
+    def close(self) -> None:
+        """Close pooled network connections owned by this client."""
+        self.session.close()
+
+    def __enter__(self) -> "Srun_Py":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     def get_base64(self, s: str) -> str:
         """
@@ -335,16 +512,14 @@ class Srun_Py:
         Returns / 返回:
             JSON info string / JSON 信息字符串
         """
-        info_temp = {
+        info_payload = {
             "username": username,
             "password": password,
             "ip": ip,
             "acid": self.ac_id,
-            "enc_ver": self.enc
+            "enc_ver": self.enc,
         }
-        i = re.sub("'", '"', str(info_temp))
-        i = re.sub(" ", '', i)
-        return i
+        return json.dumps(info_payload, ensure_ascii=False, separators=(",", ":"))
 
     def init_getip(self) -> Tuple[str, Optional[str]]:
         """
@@ -354,27 +529,16 @@ class Srun_Py:
         Returns / 返回:
             Tuple of (IP address, username) / (IP 地址, 用户名) 的元组
         """
-        try:
-            res = self.session.get(self.get_ip_api)
-        except Exception:
-            try:
-                res = self.session.get(
-                    self.get_ip_api_ip, headers=self.header, verify=False
-                )
-            except Exception:
-                try:
-                    res = self.session.get(
-                        self.get_ip_api.replace('https', 'http', 1)
-                    )
-                except Exception:
-                    res = self.session.get(
-                        self.get_ip_api_ip.replace('https', 'http', 1),
-                        headers=self.header, verify=False
-                    )
-        data = json.loads(res.text[res.text.find('(') + 1:-1])
-        ip = data.get('client_ip') or data.get('online_ip')
-        username = data.get('user_name')
-        return ip, username
+        response = self._request(
+            "/cgi-bin/rad_user_info",
+            params={"callback": "JQuery"},
+        )
+        payload = parse_json_or_jsonp(response.text)
+        client_address = payload.get("client_ip") or payload.get("online_ip")
+        if not client_address:
+            raise GatewayProtocolError("网关状态响应中缺少客户端 IP")
+        username = payload.get("user_name")
+        return str(client_address), str(username) if username is not None else None
 
     def get_token(self, username: str, ip: str) -> str:
         """
@@ -397,31 +561,15 @@ class Srun_Py:
             "ip": ip,
             "_": int(time.time() * 1000),
         }
-        try:
-            get_challenge_res = self.session.get(
-                self.get_challenge_api, params=get_challenge_params,
-                headers=self.header
-            )
-        except Exception:
-            try:
-                get_challenge_res = self.session.get(
-                    self.get_challenge_api_ip, params=get_challenge_params,
-                    headers=self.header, verify=False
-                )
-            except Exception:
-                try:
-                    get_challenge_res = self.session.get(
-                        self.get_challenge_api.replace('https', 'http', 1),
-                        params=get_challenge_params, headers=self.header
-                    )
-                except Exception:
-                    get_challenge_res = self.session.get(
-                        self.get_challenge_api_ip.replace('https', 'http', 1),
-                        params=get_challenge_params, headers=self.header,
-                        verify=False
-                    )
-        token = re.search('"challenge":"(.*?)"', get_challenge_res.text).group(1)
-        return token
+        response = self._request(
+            "/cgi-bin/get_challenge",
+            params=get_challenge_params,
+        )
+        payload = parse_json_or_jsonp(response.text)
+        challenge = payload.get("challenge")
+        if not challenge:
+            raise GatewayProtocolError("网关 challenge 响应中缺少 challenge 字段")
+        return str(challenge)
 
     def is_connected(self) -> Tuple[bool, bool, Optional[Dict]]:
         """
@@ -433,30 +581,25 @@ class Srun_Py:
             (是否可用, 是否在线, 数据) 的元组
         """
         try:
-            try:
-                res = self.session.get(self.get_ip_api)
-            except Exception:
-                try:
-                    res = self.session.get(
-                        self.get_ip_api_ip, headers=self.header, verify=False
-                    )
-                except Exception:
-                    try:
-                        res = self.session.get(
-                            self.get_ip_api.replace('https', 'http', 1)
-                        )
-                    except Exception:
-                        res = self.session.get(
-                            self.get_ip_api_ip.replace('https', 'http', 1),
-                            headers=self.header, verify=False
-                        )
-            data = json.loads(res.text[res.text.find('(') + 1:-1])
-            if 'error' in data and data['error'] == 'not_online_error':
-                return True, False, data
-            else:
-                return True, True, data
-        except Exception:
+            response = self._request(
+                "/cgi-bin/rad_user_info",
+                params={"callback": "JQuery"},
+            )
+            payload = parse_json_or_jsonp(response.text)
+        except SrunError as error:
+            self.last_error = error
             return False, False, None
+
+        self.last_error = None
+        error_code = str(payload.get("error", "")).lower()
+        if error_code == "not_online_error":
+            return True, False, payload
+        if error_code and error_code not in {"ok", "online"}:
+            self.last_error = GatewayProtocolError(
+                f"网关返回了未知状态：{error_code}"
+            )
+            return True, False, payload
+        return True, True, payload
 
     def do_complex_work(self, username: str, password: str,
                         ip: str, token: str) -> Tuple[str, str, str]:
@@ -479,7 +622,7 @@ class Srun_Py:
         chksum = get_sha1(self.get_chksum(username, token, hmd5, ip, i))
         return i, hmd5, chksum
 
-    def _parse_portal_payload(self, raw: str) -> Dict:
+    def _parse_portal_payload(self, raw: str) -> Dict[str, Any]:
         """
         Parse raw portal response (JSON or JSONP) into a dictionary.
         将门户原始响应（JSON 或 JSONP）解析为字典。
@@ -490,37 +633,22 @@ class Srun_Py:
         Returns / 返回:
             Parsed payload dictionary / 解析后的载荷字典
         """
-        text = (raw or '').strip()
-        if not text:
-            return {}
         try:
-            return json.loads(text)
-        except Exception:
-            pass
-
-        start = text.find('(')
-        end = text.rfind(')')
-        if start != -1 and end > start:
-            body = text[start + 1:end].strip()
-            try:
-                return json.loads(body)
-            except Exception:
-                return {}
-        return {}
+            return parse_json_or_jsonp(raw)
+        except GatewayProtocolError:
+            return {}
 
     def update_acid(self) -> None:
         """
         Update AC ID from gateway redirect URL.
         从网关重定向 URL 更新 AC ID。
         """
-        response = self.session.get(
-            url=self.init_url.replace('https', 'http', 1),
-            allow_redirects=True
-        )
+        response = self._request("/", allow_redirects=True)
         parsed_url = urlparse(response.url)
         query_params = parse_qs(parsed_url.query)
-        if 'ac_id' in query_params and len(query_params['ac_id']) > 0:
-            self.ac_id = query_params['ac_id'][0]
+        acid_values = query_params.get("ac_id", [])
+        if acid_values:
+            self.ac_id = acid_values[0]
 
     def login(self, username: str, password: str) -> bool:
         """
@@ -535,113 +663,108 @@ class Srun_Py:
             True if login successful / 登录成功返回 True
 
         Raises / 抛出:
-            Exception: If already online or network not available /
-                      如果已在线或网络不可用
+            SrunError: If the gateway cannot be reached or the response is invalid /
+                      如果网关不可达或响应无效
         """
         is_available, is_online, _ = self.is_connected()
-        if not is_available or is_online:
-            raise Exception('You are already online or the network is not available!')
+        if not is_available:
+            if self.last_error is not None:
+                raise self.last_error
+            raise GatewayUnavailableError("网关当前不可用")
+        if is_online:
+            raise AlreadyOnlineError("当前线路已经登录")
+
         self.update_acid()
-        ip, _ = self.init_getip()
-        token = self.get_token(username, ip)
-        i, hmd5, chksum = self.do_complex_work(username, password, ip, token)
+        client_address, _ = self.init_getip()
+        token = self.get_token(username, client_address)
+        info, password_digest, checksum = self.do_complex_work(
+            username,
+            password,
+            client_address,
+            token,
+        )
         srun_portal_params = {
-            'callback': 'jQuery11240645308969735664_' + str(int(time.time() * 1000)),
-            'action': 'login',
-            'username': username,
-            'password': '{MD5}' + hmd5,
-            'ac_id': self.ac_id,
-            'ip': ip,
-            'chksum': chksum,
-            'info': i,
-            'n': self.n,
-            'type': self.type,
-            'os': 'windows+10',
-            'name': 'windows',
-            'double_stack': '0',
-            '_': int(time.time() * 1000)
+            "callback": "jQuery11240645308969735664_" + str(int(time.time() * 1000)),
+            "action": "login",
+            "username": username,
+            "password": "{MD5}" + password_digest,
+            "ac_id": self.ac_id,
+            "ip": client_address,
+            "chksum": checksum,
+            "info": info,
+            "n": self.n,
+            "type": self.type,
+            "os": "windows+10",
+            "name": "windows",
+            "double_stack": "0",
+            "_": int(time.time() * 1000),
         }
-        try:
-            srun_portal_res = self.session.get(
-                self.srun_portal_api, params=srun_portal_params,
-                headers=self.header
-            )
-        except Exception:
-            try:
-                srun_portal_res = self.session.get(
-                    self.srun_portal_api_ip, params=srun_portal_params,
-                    headers=self.header, verify=False
-                )
-            except Exception:
-                try:
-                    srun_portal_res = self.session.get(
-                        self.srun_portal_api.replace('https', 'http', 1),
-                        params=srun_portal_params, headers=self.header
-                    )
-                except Exception:
-                    srun_portal_res = self.session.get(
-                        self.srun_portal_api_ip.replace('https', 'http', 1),
-                        params=srun_portal_params, headers=self.header,
-                        verify=False
-                    )
-        srun_portal_res = srun_portal_res.text
-        data = json.loads(srun_portal_res[srun_portal_res.find('(') + 1:-1])
-        return data.get('error') == 'ok'
-    
+
+        response = self._request(
+            "/cgi-bin/srun_portal",
+            params=srun_portal_params,
+        )
+        payload = parse_json_or_jsonp(response.text)
+        if str(payload.get("error", "")).lower() == "ok":
+            self.last_error = None
+            return True
+
+        gateway_message = payload.get("error_msg") or payload.get("error")
+        self.last_error = AuthenticationRejectedError(
+            f"网关拒绝登录：{gateway_message or '请检查用户名和密码'}"
+        )
+        return False
+
     def logout(self) -> bool:
         is_available, is_online, _ = self.is_connected()
-        if not is_available or not is_online:
-            raise Exception('You are not online or the network is not available!')
+        if not is_available:
+            if self.last_error is not None:
+                raise self.last_error
+            raise GatewayUnavailableError("网关当前不可用")
+        if not is_online:
+            raise NotOnlineError("当前线路尚未登录")
 
-        # Align with login flow: refresh AC ID before portal logout.
-        # 与登录流程对齐：注销前刷新 AC ID。
         try:
             self.update_acid()
-        except Exception:
+        except SrunError:
             pass
 
-        ip, username = self.init_getip()
+        client_address, username = self.init_getip()
         params = {
             "action": "logout",
             "username": username,
-            "ip": ip,
-            "ac_id": self.ac_id
+            "ip": client_address,
+            "ac_id": self.ac_id,
         }
-        raw_res = ''
+
+        raw_response = ""
         try:
-            raw_res = self.session.get(
-                self.srun_portal_api, params=params,
-                headers=self.header
+            raw_response = self._request(
+                "/cgi-bin/srun_portal",
+                params=params,
             ).text
-        except Exception:
-            try:
-                raw_res = self.session.get(
-                    self.srun_portal_api_ip, params=params,
-                    headers=self.header, verify=False
-                ).text
-            except Exception:
-                raw_res = ''
+        except GatewayUnavailableError:
+            pass
 
-        payload = self._parse_portal_payload(raw_res)
-        error_code = str(payload.get('error', '')).lower()
-        res_code = str(payload.get('res', '')).lower()
-        msg_code = str(payload.get('error_msg', '')).lower()
+        payload = self._parse_portal_payload(raw_response)
+        success_codes = {
+            str(payload.get("error", "")).lower(),
+            str(payload.get("res", "")).lower(),
+            str(payload.get("error_msg", "")).lower(),
+            raw_response.strip().lower(),
+        }
 
-        # Compatible with different gateway return shapes.
-        # 兼容不同网关返回结构。
-        if (
-            error_code in {'ok', 'logout_ok'} or
-            res_code in {'ok', 'logout_ok'} or
-            msg_code in {'ok', 'logout_ok'} or
-            raw_res.strip().lower() in {'ok', 'logout_ok'}
-        ):
+        if success_codes & {"ok", "logout_ok"}:
+            self.last_error = None
             return True
 
-        # Fallback to DM-style logout when portal logout did not clearly succeed.
-        # 当 portal 注销未明确成功时，回退到 DM 风格注销。
-        dm_res = self.logout_classic()
-        dm_text = dm_res.strip().lower()
-        return dm_text in {'ok', 'logout_ok', 'success', '1', 'true'}
+        classic_response = self.logout_classic().strip().lower()
+        logout_succeeded = classic_response in {"ok", "logout_ok", "success", "1", "true"}
+        if logout_succeeded:
+            self.last_error = None
+        else:
+            self.last_error = GatewayProtocolError("网关未确认注销成功")
+        return logout_succeeded
 
     def logout_classic(self) -> str:
         """
@@ -655,39 +778,23 @@ class Srun_Py:
             Exception: If not online or network not available /
                       如果未在线或网络不可用
         """
-        ip, username = self.init_getip()
-        t = int(time.time() * 1000)
-        sign = get_sha1(str(t) + username + ip + '0' + str(t))
-        user_dm_params = {
-            'ip': ip,
-            'username': username,
-            'time': t,
-            'unbind': 0,
-            'sign': sign
-        }
-        try:
-            user_dm_res = self.session.get(
-                self.rad_user_dm_api, params=user_dm_params,
-                headers=self.header
-            )
-        except Exception:
-            try:
-                user_dm_res = self.session.get(
-                    self.rad_user_dm_api_ip, params=user_dm_params,
-                    headers=self.header, verify=False
-                )
-            except Exception:
-                try:
-                    user_dm_res = self.session.get(
-                        self.rad_user_dm_api.replace('https', 'http', 1),
-                        params=user_dm_params, headers=self.header
-                    )
-                except Exception:
-                    user_dm_res = self.session.get(
-                        self.rad_user_dm_api_ip.replace('https', 'http', 1),
-                        params=user_dm_params, headers=self.header,
-                        verify=False
-                    )
-        user_dm_res = user_dm_res.text
-        return user_dm_res
+        client_address, username = self.init_getip()
+        if not username:
+            raise GatewayProtocolError("网关状态响应中缺少用户名，无法执行传统注销")
 
+        timestamp = int(time.time() * 1000)
+        sign = get_sha1(
+            str(timestamp) + username + client_address + "0" + str(timestamp)
+        )
+        user_dm_params = {
+            "ip": client_address,
+            "username": username,
+            "time": timestamp,
+            "unbind": 0,
+            "sign": sign,
+        }
+        response = self._request(
+            "/cgi-bin/rad_user_dm",
+            params=user_dm_params,
+        )
+        return response.text

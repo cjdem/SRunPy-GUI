@@ -7,11 +7,9 @@ This module provides the Windows graphical interface for SRunPy.
 
 import base64
 import ctypes
-import json
 import os
 import platform
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -29,10 +27,26 @@ import win32con
 import win32gui
 from Crypto.Cipher import AES
 from PIL import Image
-from win10toast import ToastNotifier
 
-from srunpy import PROGRAM_VERSION, SrunClient, WebRoot
+try:
+    from win10toast import ToastNotifier
+except ImportError:
+    class ToastNotifier:
+        """Compatibility fallback when the legacy toast package is unavailable."""
+
+        def show_toast(self, *_: object, **__: object) -> bool:
+            return False
+
+from srunpy import SrunClient, WebRoot, __version__
+from srunpy.config import (
+    ConfigStore,
+    WindowsDPAPICredentialProtector,
+    get_default_config_path,
+    get_legacy_config_path,
+)
 from srunpy.ip_utils import get_local_ipv4_addresses
+from srunpy.reconnect import ReconnectService
+from srunpy.update import is_newer_release
 
 
 def is_ip_address(address: str) -> bool:
@@ -75,7 +89,6 @@ def is_domain(address: str) -> Tuple[bool, str]:
 
 # Global instances / 全局实例
 sysToaster = ToastNotifier()
-current_pid = os.getpid()
 application_path = os.path.abspath(sys.argv[0])
 python_path = os.path.abspath(sys.executable)
 start_lnk_path = os.path.join(
@@ -83,27 +96,7 @@ start_lnk_path = os.path.join(
     r'Microsoft\Windows\Start Menu\Programs\Startup',
     '校园网登陆器.lnk'
 )
-appdata_path = os.path.expandvars(r'%APPDATA%')
-config_path = os.path.join(appdata_path, 'SRunPy', 'config.json')
-
-
-def exit_application() -> None:
-    """
-    Exit the application.
-    退出应用程序。
-    """
-    os._exit(0)
-
-
-def webbrowser_open(url: str) -> None:
-    """
-    Open URL in default web browser.
-    在默认浏览器中打开 URL。
-
-    Args / 参数:
-        url: URL to open / 要打开的 URL
-    """
-    webbrowser.open(url)
+config_path = str(get_default_config_path())
 
 
 def get_Color_Mode() -> int:
@@ -133,12 +126,13 @@ def get_Update() -> bool:
     """
     try:
         response = requests.get(
-            "https://api.github.com/repos/HofNature/SRunPy-GUI/releases/latest"
+            "https://api.github.com/repos/HofNature/SRunPy-GUI/releases/latest",
+            timeout=(3, 5),
         )
         if response.status_code == 200:
             data = response.json()
             tag_name = data['tag_name']
-            if tag_name[1:] > '.'.join(map(str, PROGRAM_VERSION)):
+            if is_newer_release(tag_name, __version__):
                 return True
         return False
     except Exception:
@@ -156,37 +150,16 @@ def load_config(aes_key: str) -> Dict[str, Any]:
     Returns / 返回:
         Configuration dictionary / 配置字典
     """
-    aes = MyAES(key=aes_key)
-    if not os.path.exists(config_path):
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        config = {
-            "username": "",
-            "password": "",
-            "pass_correct": False,
-            "srun_host": "gw.buaa.edu.cn",
-            "self_service": "zfw.buaa.edu.cn",
-            "host_ip": "10.200.21.4",
-            "sleeptime": 5,
-            "auto_login": False,
-            "start_with_windows": False,
-            "local_ips": [],
-            "active_ip": None,
-        }
-        with open(config_path, 'w') as f:
-            f.write(json.dumps(config, indent=4, ensure_ascii=True))
-    else:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        if config['password'] != "":
-            config['password'] = aes.decode_aes(config['password'].encode())
-        if not config.get('pass_correct'):
-            config['auto_login'] = False
-        config.setdefault('local_ips', [])
-        config.setdefault('active_ip', None)
-    if len(config["local_ips"]) == 0:
-        config["local_ips"] = [None]
-        config["active_ip"] = None
-    return config
+    legacy_cipher = MyAES(key=aes_key)
+    store = ConfigStore(
+        get_default_config_path(),
+        WindowsDPAPICredentialProtector(),
+        legacy_config_path=get_legacy_config_path(),
+        legacy_password_decryptor=lambda ciphertext: legacy_cipher.decode_aes(
+            ciphertext.encode("ascii")
+        ),
+    )
+    return store.load()
 
 
 def reset_config() -> None:
@@ -194,7 +167,8 @@ def reset_config() -> None:
     Reset configuration by removing config file.
     通过删除配置文件重置配置。
     """
-    os.remove(config_path)
+    if os.path.exists(config_path):
+        os.remove(config_path)
 
 
 def save_config(config: Dict[str, Any], aes_key: str) -> None:
@@ -206,11 +180,16 @@ def save_config(config: Dict[str, Any], aes_key: str) -> None:
         config: Configuration dictionary / 配置字典
         aes_key: AES encryption key / AES 加密密钥
     """
-    aes = MyAES(key=aes_key)
-    config['password'] = aes.encode_aes(config['password']).decode()
-    with open(config_path, 'w') as f:
-        f.write(json.dumps(config, indent=4, ensure_ascii=True))
-    config['password'] = aes.decode_aes(config['password'].encode())
+    legacy_cipher = MyAES(key=aes_key)
+    store = ConfigStore(
+        get_default_config_path(),
+        WindowsDPAPICredentialProtector(),
+        legacy_config_path=get_legacy_config_path(),
+        legacy_password_decryptor=lambda ciphertext: legacy_cipher.decode_aes(
+            ciphertext.encode("ascii")
+        ),
+    )
+    store.save(config)
 
 
 def check_lnk() -> bool:
@@ -371,6 +350,7 @@ class TaskbarIcon:
 
     def __init__(self) -> None:
         """Initialize taskbar icon / 初始化托盘图标"""
+        self.should_exit = False
         self.menu = pystray.Menu(
             pystray.MenuItem("打开主界面", self.stop, default=True),
             pystray.MenuItem("退出登陆器", self.exit)
@@ -390,14 +370,14 @@ class TaskbarIcon:
         )
         self.icon.run()
 
-    def stop(self) -> None:
+    def stop(self, *_: object) -> None:
         """Stop the icon / 停止图标"""
         self.icon.stop()
 
-    def exit(self) -> None:
+    def exit(self, *_: object) -> None:
         """Exit the application / 退出应用程序"""
+        self.should_exit = True
         self.icon.stop()
-        os._exit(0)
 
 
 class GUIBackend:
@@ -426,7 +406,7 @@ class GUIBackend:
 
         self.aes_key = aes_key
         self.qt_backend = use_qt
-        self.auto_login_thread: Optional[threading.Thread] = None
+        self.reconnect_service: Optional[ReconnectService] = None
         self.srun_clients: Dict[Optional[str], SrunClient] = {}
         self.active_ip: Optional[str] = None
         self.isUptoDate = False
@@ -435,21 +415,12 @@ class GUIBackend:
         def check_update():
             self.isUptoDate = get_Update()
 
-        threading.Thread(target=check_update).start()
+        threading.Thread(
+            target=check_update,
+            name="SRunPy-UpdateCheck",
+            daemon=True,
+        ).start()
         self.refresh_config()
-
-        if 'process_id' in self.config and self.config['process_id'] != current_pid:
-            subprocess.call(
-                "start /B taskkill /f /pid " + str(self.config['process_id']),
-                shell=True
-            )
-        if 'process_id' not in self.config:
-            try:
-                create_desktop_lnk(qt_backend=self.qt_backend)
-            except Exception:
-                pass
-        self.config["process_id"] = current_pid
-        save_config(self.config, aes_key)
 
     def refresh_config(self) -> None:
         """
@@ -469,11 +440,12 @@ class GUIBackend:
             self.start_with_windows = self.config['start_with_windows']
             self.local_ips = self.config.get('local_ips', [])
             self.active_ip = self.config.get('active_ip')
-        except Exception as e:
-            print(str(e))
-            reset_config()
-            self.refresh_config()
-            return
+            self.allow_unverified_tls = self.config.get('allow_unverified_tls', False)
+            self.allow_insecure_http = self.config.get('allow_insecure_http', False)
+        except Exception as error:
+            raise RuntimeError(
+                "无法读取应用配置；原配置已保留，请检查 Windows 凭据或配置文件权限"
+            ) from error
 
         self._rebuild_clients()
         self._ensure_active_ip()
@@ -484,12 +456,59 @@ class GUIBackend:
         else:
             delete_lnk()
 
+        self._sync_reconnect_service()
+
+    def shutdown(self) -> None:
+        """Stop background work and close all pooled network connections."""
+        if self.reconnect_service is not None:
+            self.reconnect_service.stop()
+        for srun_client in self.srun_clients.values():
+            try:
+                srun_client.close()
+            except Exception:
+                pass
+
+    def _sync_reconnect_service(self) -> None:
+        """Start or stop automatic reconnection to match current configuration."""
+        service_needs_rebuild = (
+            self.reconnect_service is None
+            or self.reconnect_service.check_interval != max(1.0, float(self.sleeptime))
+        )
+        if service_needs_rebuild:
+            if self.reconnect_service is not None:
+                self.reconnect_service.stop()
+            self.reconnect_service = ReconnectService(
+                clients_provider=lambda: dict(self.srun_clients),
+                login_callback=self.login,
+                check_interval=float(self.sleeptime),
+                notification_callback=self._notify_reconnect_result,
+            )
+
         if self.auto_login:
-            if self.auto_login_thread is None or not self.auto_login_thread.is_alive():
-                self.auto_login_thread = threading.Thread(
-                    target=self.auto_login_deamon
-                )
-                self.auto_login_thread.start()
+            self.reconnect_service.start()
+        else:
+            self.reconnect_service.stop()
+
+    def _notify_reconnect_result(
+        self,
+        interface_ip: Optional[str],
+        login_succeeded: bool,
+        failure_count: int,
+    ) -> None:
+        """Show rate-limited reconnect feedback for one network interface."""
+        interface_label = f"IP {interface_ip} " if interface_ip is not None else ""
+        if login_succeeded:
+            message = interface_label + "自动登录成功"
+        elif failure_count in {1, 3}:
+            message = interface_label + "自动登录失败，请检查账号或网络"
+        else:
+            return
+        sysToaster.show_toast(
+            "校园网登录器",
+            message,
+            duration=5,
+            threaded=True,
+        )
 
     def _create_client(self, client_ip: Optional[str]) -> SrunClient:
         """
@@ -503,15 +522,29 @@ class GUIBackend:
             SrunClient instance / SrunClient 实例
         """
         if self.srun_host == "":
-            return SrunClient(self.host_ip, self.host_ip, client_ip=client_ip)
-        return SrunClient(self.srun_host, self.host_ip, client_ip=client_ip)
+            gateway_host = self.host_ip
+        else:
+            gateway_host = self.srun_host
+        return SrunClient(
+            gateway_host,
+            self.host_ip,
+            client_ip=client_ip,
+            allow_unverified_tls=self.allow_unverified_tls,
+            allow_insecure_http=self.allow_insecure_http,
+        )
 
     def _rebuild_clients(self) -> None:
         """
         Rebuild all client instances based on configuration.
         根据配置重建所有客户端实例。
         """
+        previous_clients = self.srun_clients
         self.srun_clients = {}
+        for previous_client in previous_clients.values():
+            try:
+                previous_client.close()
+            except Exception:
+                pass
         ip_list: List[Optional[str]] = []
         seen = set()
 
@@ -696,6 +729,8 @@ class GUIBackend:
                     resolved_host if resolved_host != "" else resolved_ip,
                     resolved_ip,
                     client_ip=ip,
+                    allow_unverified_tls=self.allow_unverified_tls,
+                    allow_insecure_http=self.allow_insecure_http,
                 )
                 connectivity = client.is_connected()
                 if isinstance(connectivity, tuple):
@@ -756,10 +791,12 @@ class GUIBackend:
                 self.config['username'] = username.lower()
             else:
                 self.config['username'] = username
-            self.pass_correct = False
+            self.config['pass_correct'] = False
+            self.config['auto_login'] = False
         if password != "" and password != self.config['password']:
             self.config['password'] = password
-            self.pass_correct = False
+            self.config['pass_correct'] = False
+            self.config['auto_login'] = False
         save_config(self.config, self.aes_key)
         self.refresh_config()
 
@@ -835,6 +872,119 @@ class GUIBackend:
             self.local_ips,
         )
 
+    def get_app_state(self) -> Dict[str, Any]:
+        """Return named UI state without exposing the stored plaintext password."""
+        return {
+            "version": __version__,
+            "username": self.username,
+            "has_password": bool(self.password),
+            "auto_login": self.auto_login,
+            "start_with_windows": self.start_with_windows,
+            "update_available": self.isUptoDate,
+            "gateway": self.srun_host if self.srun_host else self.host_ip,
+            "self_service": self.self_service,
+            "active_ip": self.active_ip,
+            "selected_ips": list(self.local_ips),
+            "available_ips": get_local_ipv4_addresses(),
+            "reconnect_interval": self.sleeptime,
+            "allow_unverified_tls": self.allow_unverified_tls,
+            "allow_insecure_http": self.allow_insecure_http,
+        }
+
+    def get_connection_status(self, ip: Optional[str] = None) -> Dict[str, Any]:
+        """Return a structured connection state and safe diagnostic message."""
+        client = self.get_client(ip)
+        if client is None:
+            return {
+                "available": False,
+                "online": False,
+                "data": {},
+                "error_code": "interface_unavailable",
+                "message": "所选网络接口不可用",
+            }
+
+        is_available, is_online, data = client.is_connected()
+        last_error = getattr(client, "last_error", None)
+        return {
+            "available": is_available,
+            "online": is_online,
+            "data": data or {},
+            "error_code": getattr(last_error, "code", None),
+            "message": getattr(last_error, "message", None),
+        }
+
+    def perform_login(
+        self,
+        username: str,
+        password: str,
+        ip: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Save changed credentials and execute login as one UI operation."""
+        if not username.strip():
+            return {"ok": False, "message": "请输入用户名"}
+        if not password and not self.password:
+            return {"ok": False, "message": "请输入密码"}
+
+        self.set_config(username.strip(), password)
+        client = self.get_client(ip)
+        if client is None:
+            return {"ok": False, "message": "所选网络接口不可用"}
+        try:
+            login_succeeded = client.login(self.username, self.password)
+        except Exception as error:
+            return {"ok": False, "message": str(error)}
+
+        if not login_succeeded:
+            last_error = getattr(client, "last_error", None)
+            return {
+                "ok": False,
+                "message": getattr(last_error, "message", "登录失败，请检查账号和网络"),
+            }
+
+        if not self.pass_correct:
+            self.config["pass_correct"] = True
+            save_config(self.config, self.aes_key)
+            self.refresh_config()
+        return {"ok": True, "message": "登录成功"}
+
+    def perform_logout(self, ip: Optional[str] = None) -> Dict[str, Any]:
+        """Execute logout and preserve a user-readable failure reason."""
+        client = self.get_client(ip)
+        if client is None:
+            return {"ok": False, "message": "所选网络接口不可用"}
+        try:
+            logout_succeeded = client.logout()
+        except Exception as error:
+            return {"ok": False, "message": str(error)}
+        return {
+            "ok": logout_succeeded,
+            "message": "已注销" if logout_succeeded else "注销失败，请稍后重试",
+        }
+
+    def update_preferences(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and atomically apply desktop settings from the new UI."""
+        gateway = str(settings.get("gateway", "")).strip()
+        self_service = str(settings.get("self_service", "")).strip()
+        if not self._update_gateway_only(gateway, self_service):
+            return {"ok": False, "message": "无法解析网关地址，请检查输入"}
+
+        try:
+            reconnect_interval = int(settings.get("reconnect_interval", self.sleeptime))
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "重连间隔必须是整数"}
+        if not 3 <= reconnect_interval <= 300:
+            return {"ok": False, "message": "重连间隔必须在 3 到 300 秒之间"}
+
+        selected_ips = settings.get("selected_ips")
+        active_ip = settings.get("active_ip")
+        self._update_local_ip_selection(selected_ips, active_ip)
+        self.config["sleeptime"] = reconnect_interval
+        self.config["allow_unverified_tls"] = bool(settings.get("allow_unverified_tls"))
+        self.config["allow_insecure_http"] = bool(settings.get("allow_insecure_http"))
+        save_config(self.config, self.aes_key)
+        self.refresh_config()
+        return {"ok": True, "message": "设置已保存"}
+
     def get_ip_settings(self) -> Dict[str, Any]:
         """
         Get IP settings.
@@ -884,72 +1034,8 @@ class GUIBackend:
             True if successful / 成功返回 True
         """
         if start:
-            executable_path = os.path.abspath(sys.executable)
-            arguments = sys.argv
-            if "--no-auto-open" in arguments:
-                arguments.remove("--no-auto-open")
-            if arguments[0].endswith('srunpy-gui') or arguments[0].endswith('srunpy'):
-                arguments[0] += '.exe'
-            if executable_path.endswith('pythonw.exe'):
-                executable_path = os.path.join(
-                    os.path.dirname(executable_path), 'python.exe'
-                )
-            try:
-                import pip  # noqa: F401
-            except ImportError:
-                pip = None
-
-            if (os.path.exists(executable_path) and
-                    executable_path.endswith('python.exe') and pip is not None):
-                try:
-                    import tempfile
-                    # Create batch script for update and restart
-                    # 创建用于更新和重启的批处理脚本
-                    bat_path = os.path.join(
-                        tempfile.gettempdir(),
-                        f"SRunPy_update_{int(time.time())}.bat"
-                    )
-                    args_cmd = subprocess.list2cmdline(arguments)
-                    bat_lines = [
-                        "@echo off",
-                        "REM wait a bit for the current process to exit",
-                        "echo Updating, please wait ...",
-                        "timeout /t 2 /nobreak >nul 2>&1",
-                        f'"{executable_path}" -m pip install --upgrade srunpy',
-                    ]
-                    if arguments[0].endswith('.exe'):
-                        exe_path = os.path.abspath(arguments[0])
-                        bat_lines.append(f'cd /d "{os.path.dirname(exe_path)}"')
-                        bat_lines.append(f'start {os.path.basename(exe_path)}')
-                    else:
-                        bat_lines.append(f'start "" "{executable_path}" {args_cmd}')
-                    bat_lines.append("exit")
-
-                    with open(bat_path, "w", encoding="utf-8") as f:
-                        f.write("\r\n".join(bat_lines))
-
-                    # Launch batch script and exit
-                    # 启动批处理脚本并退出
-                    subprocess.Popen(
-                        ['cmd', '/c', 'start', '', bat_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        stdin=subprocess.DEVNULL,
-                        close_fds=True
-                    )
-                    os._exit(0)
-                    return True
-                except Exception as exc:
-                    print(f"自动更新失败: {exc}")
-                    webbrowser.open(
-                        "https://github.com/HofNature/SRunPy-GUI/releases/latest"
-                    )
-                    return False
-            else:
-                webbrowser.open(
-                    "https://github.com/HofNature/SRunPy-GUI/releases/latest"
-                )
-                return True
+            webbrowser.open("https://github.com/HofNature/SRunPy-GUI/releases/latest")
+            return True
         self.hasDoneUpdate = True
         return True
 
@@ -961,11 +1047,14 @@ class GUIBackend:
         Args / 参数:
             ip: Client IP (None for default) / 客户端 IP（None 表示默认）
         """
-        client = self.get_client(None)
+        client = self.get_client(ip)
+        configured_service = self.self_service.strip().rstrip("/")
+        if configured_service.startswith(("http://", "https://")):
+            self_service_url = configured_service
+        else:
+            self_service_url = f"https://{configured_service}"
         if client is None:
-            client = self.get_client(ip)
-        if client is None:
-            webbrowser.open(f"http://{self.self_service}")
+            webbrowser.open(self_service_url)
             return
 
         is_available, is_online, data = client.is_connected()
@@ -978,10 +1067,10 @@ class GUIBackend:
                 f"zh-CN:{username}".encode()
             ).decode()
             webbrowser.open(
-                f"http://{self.self_service}/site/sso?data={data_str}"
+                f"{self_service_url}/site/sso?data={data_str}"
             )
         else:
-            webbrowser.open(f"http://{self.self_service}")
+            webbrowser.open(self_service_url)
 
     def set_srun_host(self, srun_host: str, self_service: str,
                       selected_ips: Optional[List[Optional[str]]] = None,
@@ -1005,64 +1094,6 @@ class GUIBackend:
         save_config(self.config, self.aes_key)
         self.refresh_config()
         return True
-
-    def auto_login_deamon(self) -> None:
-        """
-        Auto-login daemon thread.
-        自动登录守护线程。
-        """
-        login_failed_count = 0
-        while self.auto_login:
-            if len(self.srun_clients) == 0:
-                time.sleep(self.sleeptime)
-                continue
-
-            for key, srun_client in self.srun_clients.items():
-                key_str = f"IP {key} " if key is not None else ""
-                try:
-                    is_available, is_online, _ = srun_client.is_connected()
-                except Exception:
-                    is_available, is_online = False, False
-
-                if is_available and not is_online:
-                    try:
-                        if self.login(key):
-                            sysToaster.show_toast(
-                                "校园网登陆器",
-                                key_str + "自动登陆成功",
-                                duration=5,
-                                threaded=True
-                            )
-                            login_failed_count = 0
-                        else:
-                            sysToaster.show_toast(
-                                "校园网登陆器",
-                                key_str + "自动登陆失败",
-                                duration=5,
-                                threaded=True
-                            )
-                            login_failed_count += 1
-                    except Exception:
-                        sysToaster.show_toast(
-                            "校园网登陆器",
-                            key_str + "自动登陆失败",
-                            duration=5,
-                            threaded=True
-                        )
-                        login_failed_count += 1
-
-            if self.auto_login:
-                time.sleep(self.sleeptime)
-                if login_failed_count > 3:
-                    sysToaster.show_toast(
-                        "校园网登陆器",
-                        "自动登陆失败次数过多，请检查账号密码",
-                        duration=180,
-                        threaded=True
-                    )
-                    time.sleep(60 * (login_failed_count - 3))
-            else:
-                break
 
     def login(self, ip: Optional[str] = None) -> bool:
         """
@@ -1186,13 +1217,13 @@ class MainWindow:
         }
 
         self.window = webview.create_window(
-            "校园网登陆器",
+            "校园网登录器",
             os.path.join(WebRoot, "index.html"),
-            width=410,
-            height=360,
-            resizable=False,
-            frameless=True,
-            easy_drag=False,
+            width=820,
+            height=720,
+            min_size=(560, 620),
+            resizable=True,
+            frameless=False,
         )
         
         self.hwnd = None
@@ -1259,12 +1290,15 @@ class MainWindow:
         # 向 JavaScript 暴露后端方法
         self.window.expose(
             self.srunpy.get_online_data,
+            self.srunpy.get_app_state,
+            self.srunpy.get_connection_status,
+            self.srunpy.perform_login,
+            self.srunpy.perform_logout,
+            self.srunpy.update_preferences,
             self.srunpy.login,
             self.srunpy.logout,
             self.srunpy.set_config,
             self.srunpy.get_config,
-            webbrowser_open,
-            exit_application,
             self.srunpy.set_start_with_windows,
             self.srunpy.set_auto_login,
             self.srunpy.do_update,
@@ -1305,54 +1339,6 @@ class MainWindow:
 
                 if hwnd:
                     self.hwnd = hwnd
-                    # Get DPI for the window
-                    # 获取窗口的 DPI
-                    try:
-                        user32 = ctypes.windll.user32
-                        get_dpi = getattr(user32, "GetDpiForWindow", None)
-                        if get_dpi:
-                            dpi = get_dpi(hwnd)
-                        else:
-                            # Fallback: get device DPI
-                            # 回退：获取设备 DPI
-                            gdi32 = ctypes.windll.gdi32
-                            hdc = user32.GetDC(0)
-                            LOGPIXELSX = 88
-                            dpi = gdi32.GetDeviceCaps(hdc, LOGPIXELSX)
-                            user32.ReleaseDC(0, hdc)
-                    except Exception:
-                        dpi = 96
-
-                    scale = float(dpi) / 96.0
-
-                    # Original logical size used when creating the window
-                    # 创建窗口时使用的原始逻辑大小
-                    logical_w, logical_h = 410, 360
-                    new_w = int(logical_w * scale)
-                    new_h = int(logical_h * scale)
-
-                    # Center the window on the primary screen and resize
-                    # 将窗口置于主屏幕中央并调整大小
-                    try:
-                        screen_w = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
-                        screen_h = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
-                        left = int((screen_w - new_w) / 2)
-                        top = int((screen_h - new_h) / 2)
-                        win32gui.SetWindowPos(
-                            hwnd, None, left, top, new_w, new_h,
-                            win32con.SWP_NOZORDER
-                        )
-                    except Exception:
-                        # Fallback: keep current position, only resize
-                        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-                        try:
-                            win32gui.SetWindowPos(
-                                hwnd, None, left, top, new_w, new_h,
-                                win32con.SWP_NOZORDER
-                            )
-                        except Exception:
-                            pass
-
                     try:
                         icon_file = os.path.join(WebRoot, 'icons', 'logo.ico')
                         if os.path.exists(icon_file):
@@ -1363,7 +1349,7 @@ class MainWindow:
                                 win32gui.SendMessage(hwnd, win32con.WM_SETICON, win32con.ICON_BIG, large)
                             if small:
                                 win32gui.SendMessage(hwnd, win32con.WM_SETICON, win32con.ICON_SMALL, small)
-                    except Exception as e:
+                    except Exception:
                         pass
 
                     # try:
@@ -1388,8 +1374,6 @@ class MainWindow:
                     # except Exception as e:
                     #     pass
 
-            self.window.evaluate_js('updateInfo()')
-
         if self.srunpy.qt_backend:
             webview.start(
                 after_window_created,
@@ -1404,4 +1388,3 @@ class MainWindow:
                 localization=localization,
                 debug=False
             )
-

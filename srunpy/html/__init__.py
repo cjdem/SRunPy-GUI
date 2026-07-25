@@ -1,6 +1,5 @@
-import importlib.resources
-from os import path
-from srunpy import html
-with importlib.resources.path(html, 'index.html') as HtmlFile:
-	WebRoot = path.dirname(HtmlFile)
-	#print('Resource Path:', WebRoot)
+"""Paths for static resources bundled with the desktop application."""
+
+from pathlib import Path
+
+WebRoot = str(Path(__file__).resolve().parent)

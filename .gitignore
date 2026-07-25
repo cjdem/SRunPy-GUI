@@ -11,4 +11,5 @@ srun_client.exe
 *.pyc
 /srunpy.egg-info
 .vscode/
+.venv/
 origin
