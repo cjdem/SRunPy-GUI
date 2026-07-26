@@ -247,18 +247,22 @@ def Gui(aes_key: Optional[str] = None) -> None:
             print("校园网登录器已经在运行 SRunPy is already running")
             return
 
-        if aes_key is not None:
-            srunpy = GUIBackend(use_qt=args.qt, aes_key=aes_key)
-        else:
-            srunpy = GUIBackend(use_qt=args.qt)
+        srunpy = None
+        try:
+            if aes_key is not None:
+                srunpy = GUIBackend(use_qt=args.qt, aes_key=aes_key)
+            else:
+                srunpy = GUIBackend(use_qt=args.qt)
 
-        main_window = MainWindow(srunpy, not args.no_auto_open)
-        while True:
-            taskbar_icon = TaskbarIcon()
-            if taskbar_icon.should_exit:
+            main_window = MainWindow(srunpy, not args.no_auto_open)
+            while True:
+                taskbar_icon = TaskbarIcon()
+                if taskbar_icon.should_exit:
+                    break
+                main_window.start_webview()
+        finally:
+            if srunpy is not None:
                 srunpy.shutdown()
-                break
-            main_window.start_webview()
 
 
 def Main() -> None:

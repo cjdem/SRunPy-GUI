@@ -95,3 +95,25 @@ def test_legacy_roaming_location_is_copied_once(tmp_path: Path) -> None:
     assert config["username"] == "student"
     assert current_path.exists()
     assert legacy_path.exists()
+
+
+def test_traffic_preferences_are_normalized_to_safe_bounds(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "traffic_sampling_enabled": 0,
+                "traffic_sample_interval": "100",
+                "traffic_history_enabled": 1,
+                "traffic_retention_days": -10,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = create_store(config_path).load()
+
+    assert config["traffic_sampling_enabled"] is False
+    assert config["traffic_sample_interval"] == 5.0
+    assert config["traffic_history_enabled"] is True
+    assert config["traffic_retention_days"] == 1

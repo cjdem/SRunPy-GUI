@@ -74,11 +74,12 @@ try {
         "--windows-console-mode=disable",
         "--output-dir=$buildRoot",
         "--output-filename=SRunClient.exe",
+        "--include-package=psutil",
         "--include-data-dir=srunpy/html=srunpy/html",
         "--windows-icon-from-ico=$iconPath",
         "--file-version=$applicationVersion",
         "--product-version=$applicationVersion",
-        "--company-name=HofNature",
+        "--company-name=cjdem",
         "--product-name=SRunPy Campus Network Client",
         "--file-description=SRunPy Campus Network Client",
         $entryPoint
@@ -87,6 +88,20 @@ try {
 
     if (-not (Test-Path (Join-Path $standaloneDirectory "SRunClient.exe"))) {
         throw "Nuitka completed without producing the expected executable."
+    }
+
+    $releaseNoticeFiles = @(
+        "LICENSE",
+        "README.md",
+        "SOURCE_CODE.md",
+        "THIRD_PARTY_NOTICES.md"
+    )
+    foreach ($releaseNoticeFile in $releaseNoticeFiles) {
+        $noticeSourcePath = Join-Path $projectRoot $releaseNoticeFile
+        if (-not (Test-Path $noticeSourcePath)) {
+            throw "Required release notice is missing: $noticeSourcePath"
+        }
+        Copy-Item -Path $noticeSourcePath -Destination $standaloneDirectory -Force
     }
 
     $portableArchive = Join-Path $releaseRoot "SRunPy-$applicationVersion-win-x64-portable.zip"

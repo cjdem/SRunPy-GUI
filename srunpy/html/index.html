@@ -15,7 +15,41 @@
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
 
-    <main id="main-content" class="app-shell">
+    <div class="workspace-shell">
+      <nav class="utility-rail" aria-label="快捷操作">
+        <a class="rail-home" href="#main-content" aria-label="返回仪表盘顶部" title="仪表盘">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 10.5 12 4l8 6.5v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z" />
+            <path d="M9 20v-6h6v6" />
+          </svg>
+          <span class="rail-label">仪表盘</span>
+        </a>
+        <button id="refresh-button" class="rail-button" type="button" title="刷新连接状态">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+            <path d="M20 5v6h-6" />
+          </svg>
+          <span class="rail-label">刷新</span>
+        </button>
+        <button id="self-service-button" class="rail-button" type="button" title="打开校园网自服务">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M14 5h5v5" />
+            <path d="m13 11 6-6" />
+            <path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" />
+          </svg>
+          <span class="rail-label">自服务</span>
+        </button>
+        <span class="rail-spacer" aria-hidden="true"></span>
+        <button id="settings-button" class="rail-button" type="button" title="客户端设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" />
+          </svg>
+          <span class="rail-label">设置</span>
+        </button>
+      </nav>
+
+      <main id="main-content" class="app-shell">
       <header class="topbar">
         <div class="brand-block">
           <img class="brand-logo" src="./icons/logo.png" alt="" />
@@ -33,11 +67,6 @@
             <span class="live-dot" aria-hidden="true"></span>
             <span id="live-badge-text">检查中</span>
           </span>
-          <button id="refresh-button" class="icon-button" type="button" title="刷新连接状态">
-            <span class="refresh-glyph" aria-hidden="true">↻</span>
-            <span class="sr-only">刷新连接状态</span>
-          </button>
-          <button id="settings-button" class="secondary-button" type="button">客户端设置</button>
         </div>
       </header>
 
@@ -137,11 +166,11 @@
 
           <article class="metric-card metric-traffic">
             <div class="metric-heading">
-              <span>已用流量</span>
+              <span>账户累计流量</span>
               <span class="metric-symbol" aria-hidden="true">TX</span>
             </div>
             <strong id="metric-traffic" class="metric-value">--</strong>
-            <p>本次账户累计流量</p>
+            <p>深澜账户统计，具体周期由现网决定</p>
           </article>
 
           <article class="metric-card metric-balance">
@@ -150,9 +179,59 @@
               <span class="metric-symbol" aria-hidden="true">¥</span>
             </div>
             <strong id="metric-balance" class="metric-value">--</strong>
-            <p>网关返回的可用余额</p>
+            <p>深澜返回值，单位以现网规则为准</p>
           </article>
         </section>
+      </section>
+
+      <section id="traffic-panel" class="traffic-panel" aria-labelledby="traffic-title">
+        <header class="traffic-panel-header">
+          <div>
+            <p class="section-kicker">LOCAL INTERFACE TRAFFIC</p>
+            <h2 id="traffic-title">本机网络仪表盘</h2>
+            <p id="traffic-interface-label">正在识别 Windows 活动网卡...</p>
+          </div>
+          <div id="traffic-range-controls" class="traffic-range-controls" aria-label="流量趋势范围">
+            <button id="traffic-range-recent" type="button" data-range="recent" aria-pressed="true">最近 60 秒</button>
+            <button id="traffic-range-hour" type="button" data-range="1h" aria-pressed="false">1 小时</button>
+            <button id="traffic-range-five-hours" type="button" data-range="5h" aria-pressed="false">5 小时</button>
+            <button id="traffic-range-twelve-hours" type="button" data-range="12h" aria-pressed="false">12 小时</button>
+            <button id="traffic-range-day" type="button" data-range="24h" aria-pressed="false">24 小时</button>
+            <button id="traffic-range-week" type="button" data-range="7d" aria-pressed="false">7 天</button>
+          </div>
+        </header>
+
+        <div class="traffic-summary" aria-label="本机实时网速">
+          <article class="traffic-stat traffic-download">
+            <span>↓ 实时下载</span>
+            <strong id="traffic-download-rate">--</strong>
+            <small>Windows 活动网卡</small>
+          </article>
+          <article class="traffic-stat traffic-upload">
+            <span>↑ 实时上传</span>
+            <strong id="traffic-upload-rate">--</strong>
+            <small>Windows 活动网卡</small>
+          </article>
+          <article class="traffic-stat">
+            <span>峰值速度</span>
+            <strong id="traffic-peak-rate">--</strong>
+            <small id="traffic-peak-detail">下载 / 上传</small>
+          </article>
+          <article class="traffic-stat">
+            <span>本次监控时长</span>
+            <strong id="traffic-duration">--</strong>
+            <small>客户端本次采样持续时间</small>
+          </article>
+        </div>
+
+        <div id="traffic-chart-region" class="traffic-chart-region" aria-label="下载和上传速度趋势图">
+          <canvas id="traffic-chart">下载与上传速度趋势；当前数值显示在图表上方。</canvas>
+          <div class="traffic-legend" aria-hidden="true">
+            <span class="legend-download">实线：下载</span>
+            <span class="legend-upload">虚线：上传</span>
+          </div>
+        </div>
+        <p id="traffic-status" class="traffic-status" aria-live="polite">正在建立采样基线...</p>
       </section>
 
       <section class="automation-panel" aria-label="自动化设置">
@@ -184,9 +263,10 @@
           <span class="footer-dot" aria-hidden="true"></span>
           <span id="gateway-label">网关：--</span>
         </div>
-        <button id="self-service-button" class="text-button" type="button">打开校园网自服务</button>
+        <span>本机流量与深澜账户统计分开计量</span>
       </footer>
-    </main>
+      </main>
+    </div>
 
     <dialog id="settings-dialog" class="settings-dialog">
       <form id="settings-form" method="dialog">
@@ -266,6 +346,32 @@
               <span>
                 <strong>允许明文 HTTP 兼容模式</strong>
                 <small>认证数据可能被监听或篡改，只用于无法使用 HTTPS 的旧网关。</small>
+              </span>
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section-title settings-title-action">
+              <span class="step-number">04</span>
+              <div>
+                <h3>流量监控</h3>
+                <p>仅保存分钟聚合，不记录访问目标、进程、SSID、MAC 或数据包内容。</p>
+              </div>
+              <button id="clear-traffic-history-button" class="secondary-button" type="button">清空历史</button>
+            </div>
+            <label class="interval-row" for="traffic-sampling-toggle">
+              <span><strong>实时采样</strong><small>按活动网卡累计计数器计算本机速度</small></span>
+              <input id="traffic-sampling-toggle" class="toggle" type="checkbox" role="switch" />
+            </label>
+            <label class="interval-row" for="traffic-history-toggle">
+              <span><strong>保存趋势历史</strong><small>写入本机独立 SQLite 数据库</small></span>
+              <input id="traffic-history-toggle" class="toggle" type="checkbox" role="switch" />
+            </label>
+            <label class="interval-row" for="traffic-retention-input">
+              <span><strong>历史保留天数</strong><small>允许 1 至 30 天，默认 7 天</small></span>
+              <span class="number-field">
+                <input id="traffic-retention-input" type="number" min="1" max="30" />
+                <span>天</span>
               </span>
             </label>
           </section>

@@ -70,3 +70,41 @@ def test_frontend_avoids_inline_event_handlers() -> None:
     html_text = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
 
     assert re.search(r"\son[a-z]+=", html_text, flags=re.IGNORECASE) is None
+
+
+def test_traffic_dashboard_has_local_canvas_and_visibility_aware_polling() -> None:
+    html_text = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+    script_text = (WEB_ROOT / "script.js").read_text(encoding="utf-8")
+
+    assert '<canvas id="traffic-chart">' in html_text
+    assert 'data-range="recent"' in html_text
+    assert 'data-range="1h"' in html_text
+    assert 'data-range="5h"' in html_text
+    assert 'data-range="12h"' in html_text
+    assert 'data-range="24h"' in html_text
+    assert 'data-range="7d"' in html_text
+    assert 'document.addEventListener("visibilitychange"' in script_text
+    assert "window.setTimeout(pollTrafficSnapshot" in script_text
+    assert "window.devicePixelRatio" in script_text
+    assert "formatAxisTime" in script_text
+    assert "quadraticCurveTo" in script_text
+    assert 'querySelectorAll("button[data-range]")' in script_text
+
+
+def test_utility_rail_actions_have_visible_labels() -> None:
+    html_text = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+
+    assert '<span class="rail-label">仪表盘</span>' in html_text
+    assert '<span class="rail-label">刷新</span>' in html_text
+    assert '<span class="rail-label">自服务</span>' in html_text
+    assert '<span class="rail-label">设置</span>' in html_text
+
+
+def test_settings_dialog_uses_permanent_dark_green_theme() -> None:
+    css_text = (WEB_ROOT / "style.css").read_text(encoding="utf-8")
+
+    assert ".settings-dialog input[type=\"checkbox\"]" in css_text
+    assert "accent-color: var(--accent);" in css_text
+    assert "background: rgb(12 17 13 / 68%);" in css_text
+    assert "background: rgb(41 54 46 / 92%);" in css_text
+    assert ".settings-dialog .risk-critical" in css_text

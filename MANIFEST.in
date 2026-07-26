@@ -1,5 +1,7 @@
 include LICENSE
 include README.md
+include SOURCE_CODE.md
+include THIRD_PARTY_NOTICES.md
 recursive-include srunpy/html *.css *.html *.ico *.js *.png *.ttf
 recursive-include packaging *.iss
 recursive-include scripts *.ps1

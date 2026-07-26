@@ -7,6 +7,13 @@ const applicationState = {
   connection: null,
   busy: false,
   probeResults: [],
+  traffic: {
+    snapshot: null,
+    points: [],
+    selectedRange: "recent",
+    pollTimerId: null,
+    pollInFlight: false,
+  },
 };
 
 const elements = {};
@@ -36,6 +43,23 @@ function cacheElements() {
     "metric-ip",
     "metric-traffic",
     "metric-balance",
+    "traffic-panel",
+    "traffic-interface-label",
+    "traffic-range-controls",
+    "traffic-range-recent",
+    "traffic-range-hour",
+    "traffic-range-five-hours",
+    "traffic-range-twelve-hours",
+    "traffic-range-day",
+    "traffic-range-week",
+    "traffic-download-rate",
+    "traffic-upload-rate",
+    "traffic-peak-rate",
+    "traffic-peak-detail",
+    "traffic-duration",
+    "traffic-chart-region",
+    "traffic-chart",
+    "traffic-status",
     "auto-login-toggle",
     "auto-start-toggle",
     "self-service-button",
@@ -54,6 +78,10 @@ function cacheElements() {
     "unverified-tls-toggle",
     "insecure-http-toggle",
     "settings-message",
+    "traffic-sampling-toggle",
+    "traffic-history-toggle",
+    "traffic-retention-input",
+    "clear-traffic-history-button",
   ];
   elementIds.forEach((elementId) => {
     elements[elementId] = document.getElementById(elementId);
@@ -98,6 +126,9 @@ function setBusy(isBusy, message = "") {
 }
 
 function formatTraffic(rawBytes) {
+  if (rawBytes === null || typeof rawBytes === "undefined" || rawBytes === "") {
+    return "--";
+  }
   const byteCount = Number(rawBytes);
   if (!Number.isFinite(byteCount) || byteCount < 0) {
     return "--";
@@ -106,6 +137,39 @@ function formatTraffic(rawBytes) {
     return `${(byteCount / 1024 ** 3).toFixed(2)} GB`;
   }
   return `${(byteCount / 1024 ** 2).toFixed(2)} MB`;
+}
+
+function formatRate(rawBytesPerSecond) {
+  if (
+    rawBytesPerSecond === null ||
+    typeof rawBytesPerSecond === "undefined" ||
+    rawBytesPerSecond === ""
+  ) {
+    return "--";
+  }
+  const rate = Number(rawBytesPerSecond);
+  if (!Number.isFinite(rate) || rate < 0) {
+    return "--";
+  }
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  let scaledRate = rate;
+  let unitIndex = 0;
+  while (scaledRate >= 1024 && unitIndex < units.length - 1) {
+    scaledRate /= 1024;
+    unitIndex += 1;
+  }
+  const decimalPlaces = scaledRate >= 100 || unitIndex === 0 ? 0 : scaledRate >= 10 ? 1 : 2;
+  return `${scaledRate.toFixed(decimalPlaces)} ${units[unitIndex]}`;
+}
+
+function formatDuration(rawSeconds) {
+  const totalSeconds = Math.max(0, Number(rawSeconds) || 0);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  return hours > 0
+    ? `${hours}时 ${String(minutes).padStart(2, "0")}分`
+    : `${minutes}分 ${String(seconds).padStart(2, "0")}秒`;
 }
 
 function renderInterfaceSelector() {
@@ -202,11 +266,247 @@ function renderConnection() {
   elements["password-input"].disabled = isOnline;
   elements["password-visibility"].disabled = isOnline;
 
-  elements["metric-username"].textContent = connectionData.user_name || "--";
-  elements["metric-ip"].textContent = connectionData.online_ip || connectionData.client_ip || "--";
-  elements["metric-traffic"].textContent = formatTraffic(connectionData.sum_bytes);
-  elements["metric-balance"].textContent =
-    typeof connectionData.user_balance !== "undefined" ? `${connectionData.user_balance} 元` : "--";
+  elements["metric-username"].textContent = connectionData.username || "--";
+  elements["metric-ip"].textContent = connectionData.online_ip || "--";
+  elements["metric-traffic"].textContent = formatTraffic(connectionData.account_total_bytes);
+  elements["metric-balance"].textContent = connectionData.balance || "--";
+}
+
+function renderTrafficSnapshot() {
+  const snapshot = applicationState.traffic.snapshot || {};
+  elements["traffic-download-rate"].textContent = formatRate(snapshot.download_bytes_per_second);
+  elements["traffic-upload-rate"].textContent = formatRate(snapshot.upload_bytes_per_second);
+  elements["traffic-peak-rate"].textContent = formatRate(
+    Math.max(
+      Number(snapshot.peak_download_bytes_per_second) || 0,
+      Number(snapshot.peak_upload_bytes_per_second) || 0,
+    ),
+  );
+  elements["traffic-peak-detail"].textContent =
+    `↓ ${formatRate(snapshot.peak_download_bytes_per_second)} / ` +
+    `↑ ${formatRate(snapshot.peak_upload_bytes_per_second)}`;
+  elements["traffic-duration"].textContent = formatDuration(snapshot.monitoring_duration_seconds);
+  elements["traffic-interface-label"].textContent = snapshot.interface_name
+    ? `${snapshot.interface_name} · ${snapshot.interface_ip || "IP 未知"}`
+    : "尚未识别活动网卡";
+  elements["traffic-status"].textContent = snapshot.available
+    ? "实时速度来自 Windows 活动网卡；历史保存原始分钟平均值与峰值。"
+    : snapshot.message || "实时流量暂不可用";
+}
+
+function drawTrafficChart() {
+  const canvas = elements["traffic-chart"];
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+  const bounds = canvas.getBoundingClientRect();
+  if (bounds.width <= 0 || bounds.height <= 0) {
+    return;
+  }
+  const pixelRatio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(bounds.width * pixelRatio);
+  canvas.height = Math.round(bounds.height * pixelRatio);
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, bounds.width, bounds.height);
+
+  const styles = getComputedStyle(document.documentElement);
+  const chartColors = {
+    grid: styles.getPropertyValue("--border").trim(),
+    text: styles.getPropertyValue("--muted-foreground").trim(),
+    download: styles.getPropertyValue("--traffic-download").trim(),
+    upload: styles.getPropertyValue("--traffic-upload").trim(),
+  };
+  const chartPadding = { top: 12, right: 12, bottom: 34, left: 54 };
+  const chartWidth = Math.max(1, bounds.width - chartPadding.left - chartPadding.right);
+  const chartHeight = Math.max(1, bounds.height - chartPadding.top - chartPadding.bottom);
+  const points = applicationState.traffic.points;
+  const finiteRates = points.flatMap((point) => [
+    point.download_bytes_per_second,
+    point.upload_bytes_per_second,
+  ]).filter((value) => value !== null && typeof value !== "undefined")
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const maximumRate = Math.max(1, ...finiteRates);
+
+  context.strokeStyle = chartColors.grid;
+  context.fillStyle = chartColors.text;
+  context.font = '10px "MiSans", sans-serif';
+  context.lineWidth = 1;
+  for (let gridIndex = 0; gridIndex <= 4; gridIndex += 1) {
+    const gridY = chartPadding.top + (chartHeight * gridIndex) / 4;
+    context.beginPath();
+    context.moveTo(chartPadding.left, gridY);
+    context.lineTo(chartPadding.left + chartWidth, gridY);
+    context.stroke();
+    const gridRate = maximumRate * (1 - gridIndex / 4);
+    context.fillText(formatRate(gridRate), 2, gridY + 3);
+  }
+
+  const formatAxisTime = (timestamp) => {
+    const date = new Date(Number(timestamp) * 1000);
+    if (Number.isNaN(date.getTime())) {
+      return "--";
+    }
+    if (applicationState.traffic.selectedRange === "7d") {
+      return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+    }
+    const timeLabel = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+    if (applicationState.traffic.selectedRange === "recent") {
+      return `${timeLabel}:${String(date.getSeconds()).padStart(2, "0")}`;
+    }
+    return timeLabel;
+  };
+
+  const tickIndices = new Set();
+  if (points.length > 0) {
+    const tickCount = Math.min(5, points.length);
+    for (let tickIndex = 0; tickIndex < tickCount; tickIndex += 1) {
+      tickIndices.add(Math.round((points.length - 1) * tickIndex / Math.max(1, tickCount - 1)));
+    }
+  }
+  context.textBaseline = "top";
+  Array.from(tickIndices).forEach((pointIndex, labelIndex, labels) => {
+    const pointX = chartPadding.left + chartWidth * (
+      points.length <= 1 ? 1 : pointIndex / (points.length - 1)
+    );
+    context.textAlign = labelIndex === 0 ? "left" : labelIndex === labels.length - 1 ? "right" : "center";
+    context.fillText(
+      formatAxisTime(points[pointIndex].timestamp),
+      pointX,
+      chartPadding.top + chartHeight + 9,
+    );
+  });
+  context.textAlign = "left";
+  context.textBaseline = "alphabetic";
+
+  const traceSmoothSegment = (segment) => {
+    context.beginPath();
+    context.moveTo(segment[0].x, segment[0].y);
+    if (segment.length === 2) {
+      context.lineTo(segment[1].x, segment[1].y);
+      return;
+    }
+    for (let pointIndex = 1; pointIndex < segment.length - 1; pointIndex += 1) {
+      const currentPoint = segment[pointIndex];
+      const nextPoint = segment[pointIndex + 1];
+      const midpointX = (currentPoint.x + nextPoint.x) / 2;
+      const midpointY = (currentPoint.y + nextPoint.y) / 2;
+      context.quadraticCurveTo(currentPoint.x, currentPoint.y, midpointX, midpointY);
+    }
+    const penultimatePoint = segment[segment.length - 2];
+    const finalPoint = segment[segment.length - 1];
+    context.quadraticCurveTo(
+      penultimatePoint.x,
+      penultimatePoint.y,
+      finalPoint.x,
+      finalPoint.y,
+    );
+  };
+
+  const drawSeries = (fieldName, color, dashed, fillArea = false) => {
+    context.strokeStyle = color;
+    context.lineWidth = 2.25;
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.setLineDash(dashed ? [6, 4] : []);
+    const segments = [];
+    let currentSegment = [];
+    points.forEach((point, pointIndex) => {
+      const rawRate = point[fieldName];
+      const rate = Number(rawRate);
+      if (point.gap || rawRate === null || typeof rawRate === "undefined" || !Number.isFinite(rate) || rate < 0) {
+        if (currentSegment.length > 0) {
+          segments.push(currentSegment);
+          currentSegment = [];
+        }
+        return;
+      }
+      const pointX = chartPadding.left + chartWidth * (points.length <= 1 ? 1 : pointIndex / (points.length - 1));
+      const pointY = chartPadding.top + chartHeight * (1 - rate / maximumRate);
+      currentSegment.push({ x: pointX, y: pointY });
+    });
+    if (currentSegment.length > 0) {
+      segments.push(currentSegment);
+    }
+
+    segments.forEach((segment) => {
+      if (fillArea && segment.length > 1) {
+        context.save();
+        traceSmoothSegment(segment);
+        context.lineTo(segment[segment.length - 1].x, chartPadding.top + chartHeight);
+        context.lineTo(segment[0].x, chartPadding.top + chartHeight);
+        context.closePath();
+        context.globalAlpha = 0.09;
+        context.fillStyle = color;
+        context.fill();
+        context.restore();
+      }
+      if (segment.length === 1) {
+        context.beginPath();
+        context.arc(segment[0].x, segment[0].y, 2.25, 0, Math.PI * 2);
+        context.fillStyle = color;
+        context.fill();
+      } else {
+        traceSmoothSegment(segment);
+        context.stroke();
+      }
+    });
+  };
+  drawSeries("download_bytes_per_second", chartColors.download, false, true);
+  drawSeries("upload_bytes_per_second", chartColors.upload, true);
+  context.setLineDash([]);
+}
+
+async function refreshTrafficHistory() {
+  const backend = await waitForBackend();
+  const result = await backend.get_traffic_history(applicationState.traffic.selectedRange);
+  applicationState.traffic.points = result.ok && Array.isArray(result.points) ? result.points : [];
+  drawTrafficChart();
+}
+
+function scheduleTrafficPoll(delayMilliseconds = 1000) {
+  if (applicationState.traffic.pollTimerId !== null) {
+    window.clearTimeout(applicationState.traffic.pollTimerId);
+  }
+  if (document.hidden || !applicationState.config.traffic_sampling_enabled) {
+    applicationState.traffic.pollTimerId = null;
+    return;
+  }
+  applicationState.traffic.pollTimerId = window.setTimeout(pollTrafficSnapshot, delayMilliseconds);
+}
+
+async function pollTrafficSnapshot() {
+  if (applicationState.traffic.pollInFlight || document.hidden) {
+    scheduleTrafficPoll();
+    return;
+  }
+  applicationState.traffic.pollInFlight = true;
+  try {
+    const backend = await waitForBackend();
+    applicationState.traffic.snapshot = await backend.get_traffic_snapshot();
+    renderTrafficSnapshot();
+    if (applicationState.traffic.selectedRange === "recent") {
+      await refreshTrafficHistory();
+    }
+  } catch (error) {
+    elements["traffic-status"].textContent = `流量采样失败：${error}`;
+  } finally {
+    applicationState.traffic.pollInFlight = false;
+    scheduleTrafficPoll();
+  }
+}
+
+async function selectTrafficRange(event) {
+  const selectedRange = event.currentTarget.dataset.range;
+  if (!selectedRange) {
+    return;
+  }
+  applicationState.traffic.selectedRange = selectedRange;
+  elements["traffic-range-controls"].querySelectorAll("button[data-range]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.range === selectedRange));
+  });
+  await refreshTrafficHistory();
 }
 
 async function loadApplication() {
@@ -215,6 +515,7 @@ async function loadApplication() {
     applicationState.config = await backend.get_app_state();
     renderConfig();
     await refreshConnection();
+    await pollTrafficSnapshot();
   } catch (error) {
     applicationState.connection = {
       available: false,
@@ -281,6 +582,8 @@ async function handleInterfaceChange() {
   }
   applicationState.config.active_ip = selectedIp;
   await refreshConnection();
+  applicationState.traffic.points = [];
+  await pollTrafficSnapshot();
 }
 
 async function handleAutoLoginToggle() {
@@ -317,6 +620,9 @@ function openSettings() {
   elements["reconnect-interval-input"].value = String(config.reconnect_interval || 5);
   elements["unverified-tls-toggle"].checked = Boolean(config.allow_unverified_tls);
   elements["insecure-http-toggle"].checked = Boolean(config.allow_insecure_http);
+  elements["traffic-sampling-toggle"].checked = Boolean(config.traffic_sampling_enabled);
+  elements["traffic-history-toggle"].checked = Boolean(config.traffic_history_enabled);
+  elements["traffic-retention-input"].value = String(config.traffic_retention_days || 7);
   applicationState.probeResults = [];
   renderInterfaceOptions();
   setMessage(elements["probe-message"], "");
@@ -446,11 +752,22 @@ async function saveSettings(event) {
       setMessage(elements["settings-message"], result.message, "error");
       return;
     }
+    const trafficResult = await backend.update_traffic_preferences({
+      enabled: elements["traffic-sampling-toggle"].checked,
+      sample_interval: applicationState.config.traffic_sample_interval || 1,
+      history_enabled: elements["traffic-history-toggle"].checked,
+      retention_days: Number(elements["traffic-retention-input"].value),
+    });
+    if (!trafficResult.ok) {
+      setMessage(elements["settings-message"], trafficResult.message, "error");
+      return;
+    }
     applicationState.config = await backend.get_app_state();
     renderConfig();
     elements["settings-dialog"].close();
     setMessage(elements["form-message"], result.message, "success");
     await refreshConnection();
+    scheduleTrafficPoll(0);
   } catch (error) {
     setMessage(elements["settings-message"], String(error), "error");
   } finally {
@@ -462,6 +779,35 @@ function togglePasswordVisibility() {
   const isPassword = elements["password-input"].type === "password";
   elements["password-input"].type = isPassword ? "text" : "password";
   elements["password-visibility"].textContent = isPassword ? "隐藏" : "显示";
+}
+
+async function clearTrafficHistory() {
+  const backend = await waitForBackend();
+  elements["clear-traffic-history-button"].disabled = true;
+  try {
+    const result = await backend.clear_traffic_history();
+    setMessage(elements["settings-message"], result.message, result.ok ? "success" : "error");
+    if (result.ok) {
+      applicationState.traffic.points = [];
+      drawTrafficChart();
+    }
+  } catch (error) {
+    setMessage(elements["settings-message"], String(error), "error");
+  } finally {
+    elements["clear-traffic-history-button"].disabled = false;
+  }
+}
+
+function handleVisibilityChange() {
+  if (document.hidden) {
+    if (applicationState.traffic.pollTimerId !== null) {
+      window.clearTimeout(applicationState.traffic.pollTimerId);
+      applicationState.traffic.pollTimerId = null;
+    }
+    return;
+  }
+  scheduleTrafficPoll(0);
+  drawTrafficChart();
 }
 
 function bindEvents() {
@@ -476,6 +822,13 @@ function bindEvents() {
   elements["cancel-settings-button"].addEventListener("click", () => elements["settings-dialog"].close());
   elements["settings-form"].addEventListener("submit", saveSettings);
   elements["probe-button"].addEventListener("click", probeInterfaces);
+  elements["traffic-range-controls"].querySelectorAll("button[data-range]").forEach((button) => {
+    button.addEventListener("click", selectTrafficRange);
+  });
+  elements["clear-traffic-history-button"].addEventListener("click", clearTrafficHistory);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.addEventListener("resize", drawTrafficChart);
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawTrafficChart);
   elements["self-service-button"].addEventListener("click", async () => {
     const backend = await waitForBackend();
     await backend.start_self_service(interfaceFromToken(activeInterfaceValue()));

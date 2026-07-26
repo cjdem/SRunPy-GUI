@@ -9,7 +9,7 @@
 #endif
 
 #define AppName "SRunPy 校园网登录器"
-#define AppPublisher "HofNature"
+#define AppPublisher "cjdem"
 #define AppExecutable "SRunClient.exe"
 #define AppId "{{BC973ECE-31D9-4BC8-B179-1DF8BB02F462}"
 
@@ -18,8 +18,8 @@ AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-AppPublisherURL=https://github.com/HofNature/SRunPy-GUI
-AppSupportURL=https://github.com/HofNature/SRunPy-GUI/issues
+AppPublisherURL=https://github.com/cjdem/SRunPy-GUI
+AppSupportURL=https://github.com/cjdem/SRunPy-GUI/issues
 DefaultDirName={localappdata}\Programs\SRunPy
 DefaultGroupName=SRunPy
 DisableProgramGroupPage=yes

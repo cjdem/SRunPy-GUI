@@ -12,6 +12,9 @@ license = "GPL-3.0-only"
 authors = [
     { name = "HofNature" },
 ]
+maintainers = [
+    { name = "cjdem" },
+]
 keywords = [
     "gateway",
     "login",
@@ -31,6 +34,7 @@ classifiers = [
 ]
 dependencies = [
     "packaging>=24.2",
+    "psutil>=6",
     "requests>=2.32.4,<3",
     "Pillow>=10; sys_platform == 'win32'",
     "pycryptodome>=3.20; sys_platform == 'win32'",
@@ -55,9 +59,10 @@ qt = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/HofNature/SRunPy-GUI"
-Issues = "https://github.com/HofNature/SRunPy-GUI/issues"
-Repository = "https://github.com/HofNature/SRunPy-GUI"
+Homepage = "https://github.com/cjdem/SRunPy-GUI"
+Issues = "https://github.com/cjdem/SRunPy-GUI/issues"
+Repository = "https://github.com/cjdem/SRunPy-GUI"
+Upstream = "https://github.com/HofNature/SRunPy-GUI"
 
 [project.scripts]
 srunpy = "srunpy.entry:Main"

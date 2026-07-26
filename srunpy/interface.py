@@ -38,6 +38,7 @@ except ImportError:
             return False
 
 from srunpy import SrunClient, WebRoot, __version__
+from srunpy.account_metrics import normalize_account_metrics
 from srunpy.config import (
     ConfigStore,
     WindowsDPAPICredentialProtector,
@@ -46,6 +47,8 @@ from srunpy.config import (
 )
 from srunpy.ip_utils import get_local_ipv4_addresses
 from srunpy.reconnect import ReconnectService
+from srunpy.traffic import TrafficCounterProvider, TrafficMonitorService
+from srunpy.traffic_store import TrafficHistoryStore, get_default_traffic_database_path
 from srunpy.update import is_newer_release
 
 
@@ -126,7 +129,7 @@ def get_Update() -> bool:
     """
     try:
         response = requests.get(
-            "https://api.github.com/repos/HofNature/SRunPy-GUI/releases/latest",
+            "https://api.github.com/repos/cjdem/SRunPy-GUI/releases/latest",
             timeout=(3, 5),
         )
         if response.status_code == 200:
@@ -407,6 +410,7 @@ class GUIBackend:
         self.aes_key = aes_key
         self.qt_backend = use_qt
         self.reconnect_service: Optional[ReconnectService] = None
+        self.traffic_monitor: Optional[TrafficMonitorService] = None
         self.srun_clients: Dict[Optional[str], SrunClient] = {}
         self.active_ip: Optional[str] = None
         self.isUptoDate = False
@@ -442,6 +446,10 @@ class GUIBackend:
             self.active_ip = self.config.get('active_ip')
             self.allow_unverified_tls = self.config.get('allow_unverified_tls', False)
             self.allow_insecure_http = self.config.get('allow_insecure_http', False)
+            self.traffic_sampling_enabled = self.config.get('traffic_sampling_enabled', True)
+            self.traffic_sample_interval = self.config.get('traffic_sample_interval', 1.0)
+            self.traffic_history_enabled = self.config.get('traffic_history_enabled', True)
+            self.traffic_retention_days = self.config.get('traffic_retention_days', 7)
         except Exception as error:
             raise RuntimeError(
                 "无法读取应用配置；原配置已保留，请检查 Windows 凭据或配置文件权限"
@@ -457,9 +465,12 @@ class GUIBackend:
             delete_lnk()
 
         self._sync_reconnect_service()
+        self._sync_traffic_monitor()
 
     def shutdown(self) -> None:
         """Stop background work and close all pooled network connections."""
+        if self.traffic_monitor is not None:
+            self.traffic_monitor.stop()
         if self.reconnect_service is not None:
             self.reconnect_service.stop()
         for srun_client in self.srun_clients.values():
@@ -467,6 +478,44 @@ class GUIBackend:
                 srun_client.close()
             except Exception:
                 pass
+
+    def _sync_traffic_monitor(self) -> None:
+        """Apply traffic preferences without coupling sampling to gateway polling."""
+        desired_configuration = (
+            float(self.traffic_sample_interval),
+            bool(self.traffic_history_enabled),
+            int(self.traffic_retention_days),
+        )
+        current_configuration = None
+        if self.traffic_monitor is not None:
+            current_configuration = (
+                self.traffic_monitor.sample_interval,
+                self.traffic_monitor.history_enabled,
+                self.traffic_monitor.retention_days,
+            )
+
+        if self.traffic_monitor is not None and current_configuration != desired_configuration:
+            self.traffic_monitor.stop()
+            self.traffic_monitor = None
+
+        if self.traffic_monitor is None:
+            history_store = TrafficHistoryStore(get_default_traffic_database_path())
+            self.traffic_monitor = TrafficMonitorService(
+                TrafficCounterProvider(),
+                history_store,
+                preferred_ip=self.active_ip,
+                gateway_ip=self.host_ip,
+                sample_interval=self.traffic_sample_interval,
+                history_enabled=self.traffic_history_enabled,
+                retention_days=self.traffic_retention_days,
+            )
+        else:
+            self.traffic_monitor.update_selection(self.active_ip, self.host_ip)
+
+        if self.traffic_sampling_enabled:
+            self.traffic_monitor.start()
+        else:
+            self.traffic_monitor.stop()
 
     def _sync_reconnect_service(self) -> None:
         """Start or stop automatic reconnection to match current configuration."""
@@ -849,6 +898,8 @@ class GUIBackend:
         self.config['active_ip'] = target
         save_config(self.config, self.aes_key)
         self.srun = self.get_client()
+        if self.traffic_monitor is not None:
+            self.traffic_monitor.update_selection(self.active_ip, self.host_ip)
         return True
 
     def get_config(self) -> Tuple:
@@ -889,6 +940,10 @@ class GUIBackend:
             "reconnect_interval": self.sleeptime,
             "allow_unverified_tls": self.allow_unverified_tls,
             "allow_insecure_http": self.allow_insecure_http,
+            "traffic_sampling_enabled": self.traffic_sampling_enabled,
+            "traffic_sample_interval": self.traffic_sample_interval,
+            "traffic_history_enabled": self.traffic_history_enabled,
+            "traffic_retention_days": self.traffic_retention_days,
         }
 
     def get_connection_status(self, ip: Optional[str] = None) -> Dict[str, Any]:
@@ -908,10 +963,66 @@ class GUIBackend:
         return {
             "available": is_available,
             "online": is_online,
-            "data": data or {},
+            "data": normalize_account_metrics(data, is_online=is_online).to_dict(),
             "error_code": getattr(last_error, "code", None),
             "message": getattr(last_error, "message", None),
         }
+
+    def get_traffic_capabilities(self) -> Dict[str, Any]:
+        """Return the fixed traffic feature contract exposed to the dashboard."""
+        if self.traffic_monitor is None:
+            return {"supported": False, "ranges": []}
+        return self.traffic_monitor.get_capabilities()
+
+    def get_traffic_snapshot(self) -> Dict[str, Any]:
+        """Read the in-memory sample without contacting the SRun gateway."""
+        if self.traffic_monitor is None or not self.traffic_sampling_enabled:
+            return {
+                "available": False,
+                "gap": True,
+                "message": "实时流量采样已关闭",
+            }
+        return self.traffic_monitor.get_snapshot()
+
+    def get_traffic_history(self, history_range: str) -> Dict[str, Any]:
+        """Return one allow-listed range with a bounded number of points."""
+        supported_ranges = {"recent", "1h", "5h", "12h", "24h", "7d"}
+        if history_range not in supported_ranges:
+            return {"ok": False, "range": history_range, "points": [], "message": "不支持的历史范围"}
+        if self.traffic_monitor is None:
+            return {"ok": False, "range": history_range, "points": [], "message": "流量监控不可用"}
+        return {
+            "ok": True,
+            "range": history_range,
+            "points": self.traffic_monitor.get_history(history_range),
+        }
+
+    def update_traffic_preferences(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and persist only traffic-monitor preferences."""
+        try:
+            sample_interval = float(settings.get("sample_interval", self.traffic_sample_interval))
+            retention_days = int(settings.get("retention_days", self.traffic_retention_days))
+        except (TypeError, ValueError):
+            return {"ok": False, "message": "采样间隔或保留天数无效"}
+        if not 0.5 <= sample_interval <= 5.0:
+            return {"ok": False, "message": "采样间隔必须在 0.5 到 5 秒之间"}
+        if not 1 <= retention_days <= 30:
+            return {"ok": False, "message": "历史保留天数必须在 1 到 30 天之间"}
+
+        self.config["traffic_sampling_enabled"] = bool(settings.get("enabled", True))
+        self.config["traffic_sample_interval"] = sample_interval
+        self.config["traffic_history_enabled"] = bool(settings.get("history_enabled", True))
+        self.config["traffic_retention_days"] = retention_days
+        save_config(self.config, self.aes_key)
+        self.refresh_config()
+        return {"ok": True, "message": "流量监控设置已保存"}
+
+    def clear_traffic_history(self) -> Dict[str, Any]:
+        """Delete persisted and in-memory traffic history."""
+        if self.traffic_monitor is None:
+            return {"ok": False, "message": "流量监控不可用"}
+        self.traffic_monitor.clear_history()
+        return {"ok": True, "message": "流量历史已清空"}
 
     def perform_login(
         self,
@@ -1034,7 +1145,7 @@ class GUIBackend:
             True if successful / 成功返回 True
         """
         if start:
-            webbrowser.open("https://github.com/HofNature/SRunPy-GUI/releases/latest")
+            webbrowser.open("https://github.com/cjdem/SRunPy-GUI/releases/latest")
             return True
         self.hasDoneUpdate = True
         return True
@@ -1219,9 +1330,9 @@ class MainWindow:
         self.window = webview.create_window(
             "校园网登录器",
             os.path.join(WebRoot, "index.html"),
-            width=820,
-            height=720,
-            min_size=(560, 620),
+            width=1120,
+            height=800,
+            min_size=(720, 640),
             resizable=True,
             frameless=False,
         )
@@ -1292,6 +1403,11 @@ class MainWindow:
             self.srunpy.get_online_data,
             self.srunpy.get_app_state,
             self.srunpy.get_connection_status,
+            self.srunpy.get_traffic_capabilities,
+            self.srunpy.get_traffic_snapshot,
+            self.srunpy.get_traffic_history,
+            self.srunpy.update_traffic_preferences,
+            self.srunpy.clear_traffic_history,
             self.srunpy.perform_login,
             self.srunpy.perform_logout,
             self.srunpy.update_preferences,

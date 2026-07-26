@@ -1,15 +1,36 @@
-build/*
-dist/*
-package_env/*   
-__pycache__/*
-nuitka-crash-report.xml
-srun_client.dist/*
-srun_client.build/*
-srun_client.onefile-build/*
-srun_client.exe
-/msixpackage
-*.pyc
-/srunpy.egg-info
-.vscode/
+# Python caches, environments, and test output
+__pycache__/
+*.py[cod]
+*.egg-info/
 .venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Build and packaging output
+/build/
+/dist/
+/release/
+/package_env/
+/msixpackage/
+/srun_client.build/
+/srun_client.dist/
+/srun_client.onefile-build/
+/srun_client.exe
+nuitka-crash-report.xml
+
+# Local runtime data and credentials
+*.db
+*.db-shm
+*.db-wal
+config.json
+
+# Editors and local tools
+.vscode/
+.idea/
 origin
+
+# Design references are not part of the distributed GPL project.
+/参考ui/

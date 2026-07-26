@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Protocol
 
-CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_VERSION = 3
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "schema_version": CONFIG_SCHEMA_VERSION,
@@ -30,6 +30,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "active_ip": None,
     "allow_unverified_tls": False,
     "allow_insecure_http": False,
+    "traffic_sampling_enabled": True,
+    "traffic_sample_interval": 1.0,
+    "traffic_history_enabled": True,
+    "traffic_retention_days": 7,
 }
 
 
@@ -216,6 +220,18 @@ class ConfigStore:
             config["active_ip"] = None
         if not config.get("pass_correct"):
             config["auto_login"] = False
+        config["traffic_sampling_enabled"] = bool(config.get("traffic_sampling_enabled"))
+        config["traffic_history_enabled"] = bool(config.get("traffic_history_enabled"))
+        try:
+            sample_interval = float(config.get("traffic_sample_interval", 1.0))
+        except (TypeError, ValueError):
+            sample_interval = 1.0
+        config["traffic_sample_interval"] = min(max(sample_interval, 0.5), 5.0)
+        try:
+            retention_days = int(config.get("traffic_retention_days", 7))
+        except (TypeError, ValueError):
+            retention_days = 7
+        config["traffic_retention_days"] = min(max(retention_days, 1), 30)
         config["schema_version"] = CONFIG_SCHEMA_VERSION
         return config
 
