@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $releaseRoot = Join-Path $projectRoot $OutputDirectory
 $buildRoot = Join-Path $releaseRoot "build"
-$standaloneDirectory = Join-Path $buildRoot "SRunClient.dist"
+$standaloneDirectory = Join-Path $buildRoot "srun_client.dist"
 $iconPath = Join-Path $projectRoot "srunpy\html\icons\logo.ico"
 $entryPoint = Join-Path $projectRoot "srun_client.py"
 
@@ -30,7 +30,7 @@ function Invoke-CheckedCommand {
 
 if ($PythonExecutable -eq "py") {
     $pythonCommand = "py"
-    $pythonPrefixArguments = @("-3.12")
+    $pythonPrefixArguments = @("-3")
 } else {
     $pythonCommand = $PythonExecutable
     $pythonPrefixArguments = @()
@@ -42,12 +42,12 @@ $versionArguments = $pythonPrefixArguments + @(
 )
 $applicationVersion = (& $pythonCommand @versionArguments).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $applicationVersion) {
-    throw "Unable to read the application version with Python 3.12."
+    throw "Unable to read the application version with a supported Python interpreter."
 }
 
 $runtimeVersionArguments = $pythonPrefixArguments + @(
     "-c",
-    "import sys; assert sys.version_info[:2] == (3, 12), 'Windows releases require Python 3.12 x64'"
+    "import struct, sys; assert (3, 12) <= sys.version_info[:2] < (3, 15), 'Windows releases require Python 3.12 through 3.14'; assert struct.calcsize('P') == 8, 'Windows releases require a 64-bit Python interpreter'"
 )
 Invoke-CheckedCommand -Executable $pythonCommand -Arguments $runtimeVersionArguments
 
@@ -71,6 +71,9 @@ try {
         "-m", "nuitka",
         "--standalone",
         "--assume-yes-for-downloads",
+        "--disable-plugin=pywebview",
+        "--include-module=webview.platforms.winforms",
+        "--include-module=webview.platforms.win32",
         "--windows-console-mode=disable",
         "--output-dir=$buildRoot",
         "--output-filename=SRunClient.exe",

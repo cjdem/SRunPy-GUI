@@ -23,6 +23,13 @@ def test_windows_build_copies_release_documents_into_binary_distribution() -> No
     )
 
     assert "$releaseNoticeFiles" in build_script_text
+    expected_standalone_directory = (
+        '$standaloneDirectory = Join-Path $buildRoot "srun_client.dist"'
+    )
+    assert expected_standalone_directory in build_script_text
+    assert '"--disable-plugin=pywebview"' in build_script_text
+    assert '"--include-module=webview.platforms.winforms"' in build_script_text
+    assert '"--include-module=webview.platforms.win32"' in build_script_text
     expected_copy_command = (
         "Copy-Item -Path $noticeSourcePath -Destination $standaloneDirectory"
     )

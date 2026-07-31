@@ -255,6 +255,8 @@ def create_lnk(qt_backend: bool = False) -> None:
         qt_backend: Whether using Qt backend / 是否使用 Qt 后端
     """
     delete_lnk()
+    startup_directory = os.path.dirname(start_lnk_path)
+    os.makedirs(startup_directory, exist_ok=True)
     shell = client.Dispatch('Wscript.Shell')
     link = shell.CreateShortCut(start_lnk_path)
     no_cmd_path = os.path.join(

@@ -71,17 +71,17 @@
 
 ## 从 Python 安装
 
-开发和 Python 安装方式统一使用 Python 3.12 x64：
+开发和 Python 安装支持 Python 3.12 至 3.14 x64。以下示例使用 Python 3.14：
 
 ```powershell
-py -3.12 -m pip install .
+py -3.14 -m pip install .
 srunpy
 ```
 
 也可以使用 uv 工具模式：
 
 ```powershell
-uv tool install . --python 3.12
+uv tool install . --python 3.14
 srunpy
 ```
 
@@ -147,7 +147,7 @@ srunpy-cli --info `
 创建开发环境：
 
 ```powershell
-py -3.12 -m venv .venv
+py -3.14 -m venv .venv
 .\.venv\Scripts\python -m pip install -e ".[dev,build]"
 ```
 
@@ -166,7 +166,7 @@ node --check srunpy\html\script.js
 
 构建要求：
 
-- Python 3.12 x64；
+- Python 3.12 至 3.14 x64；
 - `pip install -e ".[dev,build]"`；
 - Inno Setup 6（只构建便携版时可省略）；
 - Visual Studio C++ Build Tools，或允许 Nuitka 下载 MinGW64。

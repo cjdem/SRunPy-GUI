@@ -2,7 +2,7 @@ name: SRunPy
 channels:
   - conda-forge
 dependencies:
-  - python =3.12
+  - python >=3.12,<3.15
   - pip
   - pip:
       - -e .[dev,build]
