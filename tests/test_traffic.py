@@ -192,7 +192,7 @@ def test_stop_does_not_restart_worker_while_sample_is_blocked(tmp_path: Path) ->
     assert provider.entered.wait(timeout=2)
     worker_before_stop = monitor._thread
 
-    monitor.stop()
+    assert monitor.stop() is False
     assert monitor.is_running
 
     monitor.start()
@@ -203,7 +203,7 @@ def test_stop_does_not_restart_worker_while_sample_is_blocked(tmp_path: Path) ->
     while monitor.is_running and time.monotonic() < deadline:
         time.sleep(0.05)
 
-    monitor.stop()
+    assert monitor.stop() is True
     assert monitor.is_running is False
 
 

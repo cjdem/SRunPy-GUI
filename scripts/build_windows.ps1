@@ -63,7 +63,7 @@ New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 Push-Location $projectRoot
 try {
     if (-not $SkipChecks) {
-        Invoke-CheckedCommand -Executable $pythonCommand -Arguments ($pythonPrefixArguments + @("-m", "pytest", "--cov", "--cov-report=term-missing", "--cov-fail-under=80"))
+        Invoke-CheckedCommand -Executable $pythonCommand -Arguments ($pythonPrefixArguments + @("-m", "pytest", "--cov", "--cov-report=term-missing", "--cov-fail-under=65"))
         Invoke-CheckedCommand -Executable $pythonCommand -Arguments ($pythonPrefixArguments + @("-m", "ruff", "check", "srunpy", "tests"))
         Invoke-CheckedCommand -Executable "npm" -Arguments @("ci")
         Invoke-CheckedCommand -Executable "node" -Arguments @("--test", "tests/js/*.test.js")

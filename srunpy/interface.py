@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 import webview
@@ -205,7 +206,9 @@ class GUIBackend:
             )
 
         if self.traffic_monitor is not None and current_configuration != desired_configuration:
-            self.traffic_monitor.stop()
+            old_monitor = self.traffic_monitor
+            if not old_monitor.stop():
+                raise RuntimeError("流量监控线程仍在采样，暂不能应用新的流量设置")
             self.traffic_monitor = None
 
         if self.traffic_monitor is None:
@@ -646,11 +649,34 @@ class GUIBackend:
             if validation_errors:
                 return {"ok": False, "message": "; ".join(validation_errors)}
 
+            previous_config = deepcopy(self.config)
+            candidate_saved = False
             try:
                 save_config(candidate)
+                candidate_saved = True
                 self.refresh_config()
             except Exception as error:
-                return {"ok": False, "message": f"保存设置失败: {error}"}
+                rollback_errors: list[str] = []
+                if candidate_saved:
+                    try:
+                        save_config(previous_config)
+                    except Exception as rollback_error:
+                        rollback_errors.append(f"磁盘回滚失败: {rollback_error}")
+                    try:
+                        self.refresh_config()
+                    except Exception as rollback_error:
+                        rollback_errors.append(f"运行时回滚失败: {rollback_error}")
+                    monitor = getattr(self, "traffic_monitor", None)
+                    resume_after_stop = getattr(monitor, "resume_after_stop", None)
+                    if callable(resume_after_stop):
+                        try:
+                            resume_after_stop()
+                        except Exception as resume_error:
+                            rollback_errors.append(f"流量监控恢复失败: {resume_error}")
+                message = f"保存设置失败: {error}"
+                if rollback_errors:
+                    message += "；" + "；".join(rollback_errors)
+                return {"ok": False, "message": message}
             return {"ok": True, "message": "设置已保存"}
 
     def clear_traffic_history(self) -> Dict[str, Any]:

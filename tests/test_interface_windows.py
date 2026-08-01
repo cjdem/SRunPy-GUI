@@ -3,6 +3,7 @@
 import os
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -621,6 +622,169 @@ def test_update_settings_save_failure_is_reported_without_crash(
     refresh_mock.assert_not_called()
 
 
+@win32_only
+def test_update_settings_refresh_failure_rolls_back_disk_and_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, refresh_mock, saved_calls = _make_settings_backend(monkeypatch)
+    refresh_mock.side_effect = [RuntimeError("service restart failed"), None]
+    previous_config = dict(backend.config)
+
+    result = backend.update_settings(
+        {
+            "gateway": "192.0.2.99",
+            "self_service": "zfw.example.edu",
+            "reconnect_interval": 30,
+            "selected_ips": None,
+            "active_ip": None,
+            "allow_unverified_tls": False,
+            "allow_insecure_http": False,
+            "enabled": True,
+            "sample_interval": 2.0,
+            "history_enabled": True,
+            "retention_days": 7,
+        }
+    )
+
+    assert result["ok"] is False
+    assert "service restart failed" in result["message"]
+    assert saved_calls[0]["host_ip"] == "192.0.2.99"
+    assert saved_calls[-1] == previous_config
+    assert refresh_mock.call_count == 2
+
+
+@win32_only
+def test_traffic_settings_change_keeps_blocked_monitor_instance(
+    tmp_path: Path,
+) -> None:
+    """A blocked sample must not leave an orphaned monitor before replacement."""
+    import threading
+
+    import srunpy.interface as interface
+    from srunpy.traffic import TrafficMonitorService
+    from srunpy.traffic_store import TrafficHistoryStore
+
+    class BlockingProvider:
+        def __init__(self) -> None:
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def sample(self, *_args: object, **_kwargs: object) -> None:
+            self.entered.set()
+            self.release.wait(timeout=5)
+            return None
+
+    provider = BlockingProvider()
+    monitor = TrafficMonitorService(
+        provider,
+        TrafficHistoryStore(tmp_path / "traffic.db"),
+        preferred_ip="10.0.0.2",
+        gateway_ip="192.0.2.10",
+        sample_interval=1.0,
+    )
+    monitor.start()
+    assert provider.entered.wait(timeout=2)
+
+    backend = object.__new__(interface.GUIBackend)
+    backend.traffic_monitor = monitor
+    backend.traffic_sample_interval = 2.0
+    backend.traffic_history_enabled = True
+    backend.traffic_retention_days = 7
+    backend.traffic_sampling_enabled = True
+    backend.active_ip = "10.0.0.2"
+    backend.host_ip = "192.0.2.10"
+
+    with pytest.raises(RuntimeError, match="仍在采样"):
+        backend._sync_traffic_monitor()
+
+    assert backend.traffic_monitor is monitor
+    assert monitor.is_running
+
+    provider.release.set()
+    deadline = time.monotonic() + 3
+    while monitor.is_running and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert monitor.stop() is True
+
+
+@win32_only
+def test_update_settings_rollback_resumes_blocked_monitor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed settings refresh must restart sampling after the old sample exits."""
+    import threading
+
+    from srunpy.traffic import TrafficMonitorService
+    from srunpy.traffic_store import TrafficHistoryStore
+
+    class BlockingProvider:
+        def __init__(self) -> None:
+            self.first_sample_entered = threading.Event()
+            self.release_first_sample = threading.Event()
+            self.resumed = threading.Event()
+            self.sample_count = 0
+
+        def sample(self, *_args: object, **_kwargs: object) -> None:
+            self.sample_count += 1
+            if self.sample_count == 1:
+                self.first_sample_entered.set()
+                self.release_first_sample.wait(timeout=5)
+            else:
+                self.resumed.set()
+            return None
+
+    provider = BlockingProvider()
+    monitor = TrafficMonitorService(
+        provider,
+        TrafficHistoryStore(tmp_path / "traffic.db"),
+        preferred_ip="10.0.0.2",
+        gateway_ip="192.0.2.10",
+        sample_interval=1.0,
+    )
+    monitor.start()
+    assert provider.first_sample_entered.wait(timeout=2)
+
+    backend, _, _ = _make_settings_backend(monkeypatch)
+    backend.traffic_monitor = monitor
+
+    refresh_count = 0
+
+    def refresh_with_real_traffic_sync() -> None:
+        nonlocal refresh_count
+        refresh_count += 1
+        backend.traffic_sample_interval = 2.0 if refresh_count == 1 else 1.0
+        backend._sync_traffic_monitor()
+
+    backend.refresh_config = refresh_with_real_traffic_sync
+
+    result = backend.update_settings(
+        {
+            "gateway": "192.0.2.99",
+            "self_service": "zfw.example.edu",
+            "reconnect_interval": 30,
+            "selected_ips": None,
+            "active_ip": None,
+            "allow_unverified_tls": False,
+            "allow_insecure_http": False,
+            "enabled": True,
+            "sample_interval": 2.0,
+            "history_enabled": True,
+            "retention_days": 7,
+        }
+    )
+
+    assert result["ok"] is False
+    assert backend.traffic_monitor is monitor
+    assert monitor.is_running
+
+    provider.release_first_sample.set()
+    assert provider.resumed.wait(timeout=3)
+    assert monitor.is_running is True
+
+    assert monitor.stop() is True
+
+
 # --- Concurrency: refresh / shutdown / auto-reconnect toggling -----------------
 class _FakeRefreshClient:
     """SrunClient stand-in that records construction and close ordering."""
@@ -672,8 +836,9 @@ class _FakeRefreshTrafficMonitor:
     def start(self) -> None:
         self.started = True
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         self.stopped = True
+        return True
 
     def update_selection(self, _ip: object, _gateway: object) -> None:
         pass

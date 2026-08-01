@@ -172,7 +172,7 @@ node --check srunpy\html\script.js
 本地覆盖率检查（与 CI 门禁一致）：
 
 ```powershell
-.\.venv\Scripts\python -m pytest --cov --cov-report=term-missing --cov-fail-under=80
+.\.venv\Scripts\python -m pytest --cov --cov-report=term-missing --cov-fail-under=65
 ```
 
 测试覆盖协议固定向量与完整登录/注销流程、JSON/JSONP 解析、TLS 失败策略、请求超时、配置迁移、原子写入、CLI 退出码、自动重连、账户字段归一化、流量计数差分、分钟历史、前端资源完整性和 JavaScript 纯函数。

@@ -101,13 +101,18 @@ markers = [
 source = [
     "srunpy.account_metrics",
     "srunpy.config",
+    "srunpy.config_coordinator",
     "srunpy.errors",
+    "srunpy.entry",
     "srunpy.ip_utils",
     "srunpy.reconnect",
     "srunpy.srun",
+    "srunpy.single_instance",
     "srunpy.traffic",
     "srunpy.traffic_store",
     "srunpy.update",
+    "srunpy.interface",
+    "srunpy.windows_integration",
 ]
 
 [tool.ruff]

@@ -37,6 +37,46 @@ function Assert-PathAbsent {
     Write-Host "OK: $What removed ($Path)"
 }
 
+function Invoke-CheckedProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [Parameter(Mandatory = $true)]
+        [string]$What
+    )
+
+    $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "$What failed with exit code $($process.ExitCode): $FilePath $($ArgumentList -join ' ')"
+    }
+    Write-Host "OK: $What completed"
+}
+
+function Split-CommandLine {
+    param([Parameter(Mandatory = $true)][string]$CommandLine)
+
+    $text = $CommandLine.Trim()
+    if ($text.StartsWith('"')) {
+        $closingQuote = $text.IndexOf('"', 1)
+        if ($closingQuote -lt 0) {
+            throw "Unable to parse quoted executable path from uninstall command: $CommandLine"
+        }
+        $filePath = $text.Substring(1, $closingQuote - 1)
+        $arguments = $text.Substring($closingQuote + 1).Trim()
+    } elseif ($text -match '^(?<file>.*?\.exe)(?:\s+(?<arguments>.*))?$') {
+        $filePath = $Matches.file
+        $arguments = if ($Matches.arguments) { $Matches.arguments } else { "" }
+    } else {
+        throw "Unable to parse executable path from uninstall command: $CommandLine"
+    }
+
+    [PSCustomObject]@{
+        FilePath = $filePath
+        Arguments = $arguments
+    }
+}
+
 if (-not $InstallerPath) {
     if ($SkipBuild) {
         throw "-InstallerPath was not provided and -SkipBuild was used."
@@ -57,8 +97,8 @@ Assert-PathExists -Path $InstallerPath -What "installer"
 
 # 1. Silent install ------------------------------------------------------------
 Write-Host "Installing silently..."
-$installArguments = @($InstallerPath, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install.log")
-Start-Process -FilePath $InstallerPath -ArgumentList $installArguments -Wait
+$installArguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install.log")
+Invoke-CheckedProcess -FilePath $InstallerPath -ArgumentList $installArguments -What "Silent install"
 Assert-PathExists -Path (Join-Path $appInstallDirectory "SRunClient.exe") -What "installed executable"
 $uninstallKeys = Get-ChildItem $uninstallRegistryPath -ErrorAction SilentlyContinue |
     Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName -like "SRunPy*" }
@@ -69,8 +109,8 @@ Write-Host "OK: uninstall registry entry present"
 
 # 2. Silent upgrade (same installer again exercises the update path) -----------
 Write-Host "Re-running installer silently to exercise upgrade..."
-$upgradeArguments = @($InstallerPath, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=upgrade.log")
-Start-Process -FilePath $InstallerPath -ArgumentList $upgradeArguments -Wait
+$upgradeArguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=upgrade.log")
+Invoke-CheckedProcess -FilePath $InstallerPath -ArgumentList $upgradeArguments -What "Silent upgrade"
 Assert-PathExists -Path (Join-Path $appInstallDirectory "SRunClient.exe") -What "upgraded executable"
 
 # 3. Silent uninstall ----------------------------------------------------------
@@ -78,8 +118,14 @@ Write-Host "Uninstalling silently..."
 $uninstallString = Get-ItemProperty $uninstallKeys[0].PSPath |
     Select-Object -ExpandProperty UninstallString
 if ($uninstallString) {
-    $uninstallArguments = @($uninstallString, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=uninstall.log")
-    Start-Process -FilePath $uninstallString -ArgumentList $uninstallArguments -Wait
+    $uninstallCommand = Split-CommandLine -CommandLine $uninstallString
+    Assert-PathExists -Path $uninstallCommand.FilePath -What "uninstaller executable"
+    $uninstallArguments = @()
+    if ($uninstallCommand.Arguments) {
+        $uninstallArguments += $uninstallCommand.Arguments
+    }
+    $uninstallArguments += @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=uninstall.log")
+    Invoke-CheckedProcess -FilePath $uninstallCommand.FilePath -ArgumentList $uninstallArguments -What "Silent uninstall"
 } else {
     throw "Uninstall command could not be read from the registry."
 }

@@ -170,6 +170,7 @@ class TrafficMonitorService:
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._restart_after_stop = False
         self._baseline: Optional[TrafficCounterSample] = None
         self._accumulator: Optional[_MinuteAccumulator] = None
         self._current_interface_id: Optional[str] = None
@@ -217,17 +218,41 @@ class TrafficMonitorService:
         )
         self._thread.start()
 
-    def stop(self) -> None:
-        """Wake and stop the worker without racing a still-running sample."""
-        self._stop_event.set()
+    def stop(self) -> bool:
+        """Wake and stop the worker without racing a still-running sample.
+
+        Return ``True`` only after the worker thread has been observed to exit.
+        A sampler can be blocked inside the provider, so callers must not
+        replace this service when the bounded join times out.
+        """
+        with self._lock:
+            self._restart_after_stop = False
+            self._stop_event.set()
         worker_thread = self._thread
         if worker_thread is not None and worker_thread is not threading.current_thread():
             worker_thread.join(timeout=max(2.0, self.sample_interval * 2.0))
         with self._lock:
-            if worker_thread is None or not worker_thread.is_alive():
+            worker_stopped = worker_thread is None or not worker_thread.is_alive()
+            if worker_stopped:
                 self._flush_accumulator()
                 if worker_thread is not None:
                     self._thread = None
+        return worker_stopped
+
+    def resume_after_stop(self) -> None:
+        """Resume sampling after a timed-out stop if the old worker is alive.
+
+        A settings transaction can fail while a provider call is blocked. The
+        rollback reuses the old monitor, so remember the start request and
+        launch a fresh worker only after the blocked worker has exited.
+        """
+        with self._lock:
+            worker_thread = self._thread
+            if worker_thread is not None and worker_thread.is_alive():
+                if self._stop_event.is_set():
+                    self._restart_after_stop = True
+                return
+        self.start()
 
     def update_selection(self, preferred_ip: Optional[str], gateway_ip: str) -> None:
         with self._lock:
@@ -239,12 +264,31 @@ class TrafficMonitorService:
             self._record_gap(None, "活动网卡已切换，正在重建基线")
 
     def _run(self) -> None:
-        while not self._stop_event.is_set():
-            iteration_started_at = time.monotonic()
-            self.sample_once()
-            self._maybe_cleanup()
-            elapsed_time = time.monotonic() - iteration_started_at
-            self._stop_event.wait(max(0.0, self.sample_interval - elapsed_time))
+        try:
+            while not self._stop_event.is_set():
+                iteration_started_at = time.monotonic()
+                self.sample_once()
+                self._maybe_cleanup()
+                elapsed_time = time.monotonic() - iteration_started_at
+                self._stop_event.wait(max(0.0, self.sample_interval - elapsed_time))
+        finally:
+            restart_thread: Optional[threading.Thread] = None
+            with self._lock:
+                if (
+                    self._restart_after_stop
+                    and self._thread is threading.current_thread()
+                ):
+                    self._restart_after_stop = False
+                    self._stop_event.clear()
+                    self._started_at = time.monotonic()
+                    restart_thread = threading.Thread(
+                        target=self._run,
+                        name="SRunPy-TrafficMonitor",
+                        daemon=True,
+                    )
+                    self._thread = restart_thread
+            if restart_thread is not None:
+                restart_thread.start()
 
     def _maybe_cleanup(self) -> None:
         """Periodically purge expired history rows beyond just monitor startup."""

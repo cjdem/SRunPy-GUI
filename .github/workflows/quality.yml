@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install development dependencies
         run: python -m pip install --upgrade pip .[dev]
       - name: Check for whitespace errors
@@ -32,24 +35,86 @@ jobs:
       - name: Run tests
         run: python -m pytest
       - name: Check core test coverage
-        run: python -m pytest --cov --cov-report=term-missing --cov-fail-under=80
+        run: >-
+          python -m pytest
+          --cov=srunpy.account_metrics
+          --cov=srunpy.config
+          --cov=srunpy.errors
+          --cov=srunpy.ip_utils
+          --cov=srunpy.reconnect
+          --cov=srunpy.srun
+          --cov=srunpy.traffic
+          --cov=srunpy.traffic_store
+          --cov=srunpy.update
+          --cov-report=term-missing
+          --cov-fail-under=80
+      - name: Check full desktop application coverage
+        if: runner.os == 'Windows'
+        run: python -m pytest --cov --cov-report=term-missing --cov-fail-under=65
 
       # --- Distribution build and artifact validation (separate from the test gates above) ---
       - name: Build Python distributions
         run: python -m build
+      - name: Verify a fresh sdist contains the Windows frontend build inputs
+        shell: python
+        run: |
+          import os
+          import shutil
+          import subprocess
+          import sys
+          import tarfile
+          import tempfile
+          from pathlib import Path
+
+          archives = sorted(Path("dist").glob("*.tar.gz"))
+          if not archives:
+              raise RuntimeError("python -m build did not produce an sdist")
+          with tempfile.TemporaryDirectory() as temporary_directory:
+              extract_root = Path(temporary_directory) / "source"
+              extract_root.mkdir()
+              with tarfile.open(archives[-1], "r:gz") as archive:
+                  archive.extractall(extract_root, filter="data")
+              projects = [path for path in extract_root.iterdir() if path.is_dir()]
+              if len(projects) != 1:
+                  raise RuntimeError(f"expected one extracted project, found {projects}")
+              project = projects[0]
+              required_files = ("package.json", "package-lock.json", "srun_client.py")
+              missing = [name for name in required_files if not (project / name).is_file()]
+              if missing:
+                  raise RuntimeError(f"fresh sdist is missing: {', '.join(missing)}")
+              npm_command = "npm.cmd" if os.name == "nt" else "npm"
+              subprocess.run([npm_command, "ci"], cwd=project, check=True)
+              node_command = "node.exe" if os.name == "nt" else "node"
+              javascript_tests = sorted(project.glob("tests/js/*.test.js"))
+              if not javascript_tests:
+                  raise RuntimeError("fresh sdist is missing tests/js/*.test.js")
+              subprocess.run(
+                  [node_command, "--test", *(str(path) for path in javascript_tests)],
+                  cwd=project,
+                  check=True,
+              )
+              shutil.rmtree(project / "node_modules", ignore_errors=True)
       - name: Validate distribution metadata with twine
         run: python -m twine check dist/*
       - name: Smoke test built package entry point
-        # Installs the freshly built wheel into a clean venv and verifies the CLI
-        # entry point starts and prints --help. Non-fatal so a headless runner that
-        # cannot execute the entry point does not block the release pipeline.
-        shell: bash
-        continue-on-error: true
+        # The CLI help path is headless-safe, so a failure is a real package failure.
+        shell: python
         run: |
-          set -e
-          python -m venv /tmp/srunpy-smoke
-          /tmp/srunpy-smoke/bin/pip install --quiet dist/*.whl
-          /tmp/srunpy-smoke/bin/srunpy-cli --help
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          smoke_environment = Path(os.environ["RUNNER_TEMP"]) / "srunpy-smoke"
+          subprocess.run([sys.executable, "-m", "venv", str(smoke_environment)], check=True)
+          executable_directory = smoke_environment / ("Scripts" if os.name == "nt" else "bin")
+          pip_executable = executable_directory / ("pip.exe" if os.name == "nt" else "pip")
+          cli_executable = executable_directory / (
+              "srunpy-cli.exe" if os.name == "nt" else "srunpy-cli"
+          )
+          wheel = next(Path("dist").glob("*.whl"))
+          subprocess.run([str(pip_executable), "install", "--quiet", str(wheel)], check=True)
+          subprocess.run([str(cli_executable), "--help"], check=True)
 
   windows-package-smoke:
     runs-on: windows-latest
@@ -60,28 +125,80 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install Windows build dependencies
         run: python -m pip install --upgrade pip .[dev,build]
-      - name: Build portable client
+      - name: Build portable client from a fresh sdist
         shell: powershell
-        run: .\scripts\build_windows.ps1 -PythonExecutable python -SkipInstaller
-      - name: Launch-smoke the portable executable
-        # Extracts the portable ZIP and confirms the built executable starts and
-        # stays alive briefly. Non-fatal: a headless runner without a usable GUI
-        # session must not block the release pipeline.
-        shell: powershell
-        continue-on-error: true
         run: |
+          python -m build --sdist
+          $sdist = Get-ChildItem "${{ github.workspace }}\dist\*.tar.gz" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          $sourceRoot = Join-Path $env:RUNNER_TEMP "srunpy-sdist-build"
+          New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
+          tar -xzf $sdist.FullName -C $sourceRoot
+          $sourceProject = Get-ChildItem $sourceRoot -Directory | Select-Object -First 1
+          if (-not $sourceProject) {
+            throw "Fresh sdist did not contain an extracted project directory."
+          }
+          Push-Location $sourceProject.FullName
+          try {
+            & .\scripts\build_windows.ps1 `
+              -PythonExecutable python `
+              -OutputDirectory "release" `
+              -SkipInstaller
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows build from fresh sdist failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Pop-Location
+          }
+          $releaseTarget = "${{ github.workspace }}\release"
+          New-Item -ItemType Directory -Path $releaseTarget -Force | Out-Null
+          Copy-Item -Path (Join-Path $sourceProject.FullName "release\*") `
+            -Destination $releaseTarget -Recurse -Force
+      - name: Launch-smoke the portable executable
+        # A genuinely headless runner is an explicit skip; all other startup
+        # failures are fatal so a broken executable cannot pass this job.
+        shell: powershell
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class SrunPyDesktopSession {
+              [DllImport("user32.dll", SetLastError = true)]
+              public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+              [DllImport("user32.dll", SetLastError = true)]
+              public static extern bool CloseDesktop(IntPtr desktop);
+          }
+          "@
+          $desktopHandle = [SrunPyDesktopSession]::OpenInputDesktop(0, $false, 1)
+          if (-not [Environment]::UserInteractive -or $desktopHandle -eq [IntPtr]::Zero) {
+            if ($desktopHandle -ne [IntPtr]::Zero) {
+              [SrunPyDesktopSession]::CloseDesktop($desktopHandle) | Out-Null
+            }
+            Write-Host "::notice::Portable EXE smoke skipped: no interactive Windows desktop session."
+            exit 0
+          }
+          [SrunPyDesktopSession]::CloseDesktop($desktopHandle) | Out-Null
           $zip = Get-ChildItem "${{ github.workspace }}\release\SRunPy-*-win-x64-portable.zip" | Select-Object -First 1
           $extract = "${{ github.workspace }}\release\smoke"
           Expand-Archive -Path $zip.FullName -DestinationPath $extract -Force
-          $process = Start-Process -FilePath (Join-Path $extract "SRunClient.exe") -PassThru
-          Start-Sleep -Seconds 6
-          if ($process.HasExited) {
-            Write-Host "Portable executable exited early (exit code $($process.ExitCode))"
-          } else {
+          $process = Start-Process -FilePath (Join-Path $extract "SRunClient.exe") -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Seconds 6
+            if ($process.HasExited) {
+              throw "Portable executable exited during launch smoke with exit code $($process.ExitCode)."
+            }
             Write-Host "Portable executable stayed alive after launch smoke."
-            Stop-Process -Id $process.Id -Force
+          } finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+              $process.WaitForExit()
+            }
           }
       - name: Upload portable artifact
         uses: actions/upload-artifact@v4
@@ -90,3 +207,32 @@ jobs:
           path: |
             release/*.zip
             release/SHA256SUMS.txt
+
+  windows-installer-lifecycle:
+    runs-on: windows-latest
+    needs: core-tests
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          $innoCandidates = @(
+            "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          if (-not ($innoCandidates | Where-Object { Test-Path $_ })) {
+            choco install innosetup --no-progress --yes
+          }
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip .[dev,build]
+      - name: Run installer lifecycle test
+        shell: powershell
+        run: .\scripts\test_installer.ps1 -PythonExecutable python -OutputDirectory release
