@@ -16,6 +16,12 @@ class FakeClient:
         FakeClient.construction_kwargs.append(kwargs)
         self.close_calls = 0
 
+    def __enter__(self) -> "FakeClient":
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
+
     def close(self) -> None:
         self.close_calls += 1
         FakeClient.close_call_count += 1
@@ -135,3 +141,34 @@ def test_cli_closes_client_after_unsuccessful_login(
 
     assert exit_info.value.code == 1
     assert FakeClient.close_call_count == 1
+
+
+def test_cli_reports_structured_srun_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from srunpy.errors import RequestTimeoutError
+
+    def raise_timeout(self: FakeClient) -> None:
+        raise RequestTimeoutError("网关请求超时")
+
+    FakeClient.is_connected = raise_timeout  # type: ignore[method-assign]
+    prepare_cli(monkeypatch, "--info")
+
+    with pytest.raises(SystemExit) as exit_info:
+        entry.Cli()
+
+    assert exit_info.value.code == 1
+    output = capsys.readouterr().out
+    assert "[request_timeout]" in output
+    assert "网关请求超时" in output
+
+
+def test_cli_describe_error_falls_back_to_plain_message() -> None:
+    assert entry._describe_error(ValueError("boom")) == "boom"
+    from srunpy.errors import GatewayUnavailableError
+
+    assert (
+        entry._describe_error(GatewayUnavailableError("网关不可达"))
+        == "[gateway_unavailable] 网关不可达"
+    )

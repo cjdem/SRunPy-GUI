@@ -10,7 +10,15 @@ import json
 import platform
 from typing import List, Optional
 
+from srunpy.errors import SrunError
 from srunpy.ip_utils import get_local_ipv4_addresses
+
+
+def _describe_error(error: Exception) -> str:
+    """Format an exception as a structured, user-facing message."""
+    if isinstance(error, SrunError):
+        return f"[{error.code}] {error.message}"
+    return str(error)
 
 
 def Cli() -> None:
@@ -89,8 +97,7 @@ def Cli() -> None:
             print('  (未检测到非回环IPv4地址 No non-loopback IPv4 detected)')
         else:
             for ip in ips:
-                client = build_client(ip)
-                try:
+                with build_client(ip) as client:
                     is_available, is_online, online_data = client.is_connected()
                     showstr = f'  - {ip} '
                     if is_available:
@@ -102,8 +109,6 @@ def Cli() -> None:
                     else:
                         showstr += '(网关不可用 Unavailable)'
                     print(showstr)
-                finally:
-                    client.close()
 
     # Process local IP selections / 处理本地 IP 选择
     available_ips = set(get_local_ipv4_addresses())
@@ -173,8 +178,7 @@ def Cli() -> None:
                 label = bind_ip if bind_ip is not None else '默认(Default)'
                 print('\n=== IP:', label, '===')
                 try:
-                    client = build_client(bind_ip)
-                    try:
+                    with build_client(bind_ip) as client:
                         is_available, is_online, online_data = client.is_connected()
                         print('网络是否可用 Available:', is_available)
                         print('是否已登录 Online:', is_online)
@@ -183,10 +187,8 @@ def Cli() -> None:
                         if is_online:
                             print('在线信息 Online data:')
                             print(json.dumps(online_data, indent=4, ensure_ascii=False))
-                    finally:
-                        client.close()
                 except Exception as exc:
-                    print('查询失败 Failed to fetch status:', exc)
+                    print('查询失败 Failed to fetch status:', _describe_error(exc))
                     operation_failed = True
         elif mode == 'login':
             if args.username is None:
@@ -202,34 +204,28 @@ def Cli() -> None:
                 label = bind_ip if bind_ip is not None else '默认(Default)'
                 print('\n=== IP:', label, '===')
                 try:
-                    client = build_client(bind_ip)
-                    try:
+                    with build_client(bind_ip) as client:
                         if client.login(username, passwd):
                             print('登录成功 Login succeeded')
                         else:
                             print('登录失败 Login failed')
                             operation_failed = True
-                    finally:
-                        client.close()
                 except Exception as exc:
-                    print('登录失败 Login failed:', exc)
+                    print('登录失败 Login failed:', _describe_error(exc))
                     operation_failed = True
         elif mode == 'logout':
             for bind_ip in selected_ips:
                 label = bind_ip if bind_ip is not None else '默认(Default)'
                 print('\n=== IP:', label, '===')
                 try:
-                    client = build_client(bind_ip)
-                    try:
+                    with build_client(bind_ip) as client:
                         if client.logout():
                             print('注销成功 Logout succeeded')
                         else:
                             print('注销失败 Logout failed')
                             operation_failed = True
-                    finally:
-                        client.close()
                 except Exception as exc:
-                    print('注销失败 Logout failed:', exc)
+                    print('注销失败 Logout failed:', _describe_error(exc))
                     operation_failed = True
         elif mode == 'list_ips':
             list_ips()
