@@ -21,14 +21,9 @@ import win32con
 import win32gui
 from winotify import Notification
 
-from srunpy import SrunClient, WebRoot, __version__
+from srunpy import SrunClient, WebRoot
 from srunpy.account_metrics import normalize_account_metrics
-from srunpy.config import (
-    ConfigStore,
-    WindowsDPAPICredentialProtector,
-    get_default_config_path,
-    get_legacy_config_path,
-)
+from srunpy.config_coordinator import ConfigCoordinator, load_config, save_config
 from srunpy.ip_utils import get_local_ipv4_addresses
 from srunpy.reconnect import ReconnectService
 from srunpy.traffic import TrafficCounterProvider, TrafficMonitorService
@@ -88,46 +83,6 @@ def is_domain(address: str) -> Tuple[bool, str]:
         except socket.error:
             return False, ""
     return False, ""
-
-
-def load_config() -> Dict[str, Any]:
-    """
-    Load configuration from file with AES decryption.
-    使用 AES 解密从文件加载配置。
-
-    Returns / 返回:
-        Configuration dictionary / 配置字典
-    """
-    legacy_cipher = MyAES(key=LEGACY_AES_KEY)
-    store = ConfigStore(
-        get_default_config_path(),
-        WindowsDPAPICredentialProtector(),
-        legacy_config_path=get_legacy_config_path(),
-        legacy_password_decryptor=lambda ciphertext: legacy_cipher.decode_aes(
-            ciphertext.encode("ascii")
-        ),
-    )
-    return store.load()
-
-
-def save_config(config: Dict[str, Any]) -> None:
-    """
-    Save configuration to file with AES encryption.
-    使用 AES 加密将配置保存到文件。
-
-    Args / 参数:
-        config: Configuration dictionary / 配置字典
-    """
-    legacy_cipher = MyAES(key=LEGACY_AES_KEY)
-    store = ConfigStore(
-        get_default_config_path(),
-        WindowsDPAPICredentialProtector(),
-        legacy_config_path=get_legacy_config_path(),
-        legacy_password_decryptor=lambda ciphertext: legacy_cipher.decode_aes(
-            ciphertext.encode("ascii")
-        ),
-    )
-    store.save(config)
 
 
 class GUIBackend:
@@ -430,37 +385,20 @@ class GUIBackend:
         Raises / 抛出:
             ValueError: If gateway cannot be resolved / 如果无法解析网关
         """
-        target = gateway.strip() if gateway else ""
-        if not target:
-            return self.srun_host, self.host_ip
-        if is_ip_address(target):
-            return "", target
-        is_dom, resolved_ip = is_domain(target)
-        if is_dom and resolved_ip:
-            return target, resolved_ip
-        raise ValueError("无法解析网关地址，请检查输入")
+        return ConfigCoordinator.parse_gateway(
+            gateway,
+            self.srun_host,
+            self.host_ip,
+            is_ip_address,
+            is_domain,
+        )
 
     def _normalize_ip_selection(
         self,
         selected_ips: Optional[List[Optional[str]]],
     ) -> List[Optional[str]]:
         """Return the de-duplicated, locally-available IP selection (pure, no mutation)."""
-        if selected_ips is None:
-            return []
-        normalized: List[Optional[str]] = []
-        available = set(get_local_ipv4_addresses())
-        for ip in selected_ips:
-            if ip in (None, "", "null"):
-                normalized.append(None)
-            elif ip in available:
-                normalized.append(ip)
-        # Remove duplicates while preserving order
-        # 去除重复项同时保留顺序
-        ordered: List[Optional[str]] = []
-        for ip in normalized:
-            if ip not in ordered:
-                ordered.append(ip)
-        return ordered
+        return ConfigCoordinator.normalize_ip_selection(selected_ips)
 
     def probe_gateway_ips(self, gateway: str,
                           self_service: Optional[str] = None) -> Dict[str, Any]:
@@ -643,26 +581,7 @@ class GUIBackend:
 
     def get_app_state(self) -> Dict[str, Any]:
         """Return named UI state without exposing the stored plaintext password."""
-        return {
-            "version": __version__,
-            "username": self.username,
-            "has_password": bool(self.password),
-            "auto_login": self.auto_login,
-            "start_with_windows": self.start_with_windows,
-            "update_available": self.isUptoDate,
-            "gateway": self.srun_host if self.srun_host else self.host_ip,
-            "self_service": self.self_service,
-            "active_ip": self.active_ip,
-            "selected_ips": list(self.local_ips),
-            "available_ips": get_local_ipv4_addresses(),
-            "reconnect_interval": self.sleeptime,
-            "allow_unverified_tls": self.allow_unverified_tls,
-            "allow_insecure_http": self.allow_insecure_http,
-            "traffic_sampling_enabled": self.traffic_sampling_enabled,
-            "traffic_sample_interval": self.traffic_sample_interval,
-            "traffic_history_enabled": self.traffic_history_enabled,
-            "traffic_retention_days": self.traffic_retention_days,
-        }
+        return ConfigCoordinator.build_app_state(self.config, self.isUptoDate)
 
     def get_connection_status(self, ip: Optional[str] = None) -> Dict[str, Any]:
         """Return a structured connection state and safe diagnostic message."""
@@ -718,96 +637,14 @@ class GUIBackend:
         refreshed exactly once.
         """
         with self._backend_lock:
-            candidate = dict(self.config)
-            validation_errors: List[str] = []
-
-            gateway = str(settings.get("gateway", "")).strip()
-            self_service = str(settings.get("self_service", "")).strip()
-            try:
-                resolved_host, resolved_ip = self._parse_gateway(gateway)
-            except ValueError:
-                validation_errors.append("无法解析网关地址，请检查输入")
-                resolved_host, resolved_ip = (
-                    candidate["srun_host"],
-                    candidate["host_ip"],
-                )
-
-            try:
-                reconnect_interval = int(
-                    settings.get("reconnect_interval", self.sleeptime)
-                )
-            except (TypeError, ValueError):
-                validation_errors.append("重连间隔必须是整数")
-                reconnect_interval = self.sleeptime
-            else:
-                if not 3 <= reconnect_interval <= 300:
-                    validation_errors.append("重连间隔必须在 3 到 300 秒之间")
-
-            selected_ips = settings.get("selected_ips")
-            active_ip = settings.get("active_ip")
-            normalized_ips: List[Optional[str]] = []
-            if selected_ips is not None:
-                normalized_ips = self._normalize_ip_selection(selected_ips)
-                if (
-                    active_ip is not None
-                    and normalized_ips
-                    and active_ip not in normalized_ips
-                ):
-                    validation_errors.append("所选活动接口无效")
-
-            try:
-                sample_interval = float(
-                    settings.get("sample_interval", self.traffic_sample_interval)
-                )
-            except (TypeError, ValueError):
-                validation_errors.append("采样间隔必须是数字")
-                sample_interval = self.traffic_sample_interval
-            else:
-                if not 0.5 <= sample_interval <= 5.0:
-                    validation_errors.append("采样间隔必须在 0.5 到 5 秒之间")
-
-            try:
-                retention_days = int(
-                    settings.get("retention_days", self.traffic_retention_days)
-                )
-            except (TypeError, ValueError):
-                validation_errors.append("历史保留天数必须是整数")
-                retention_days = self.traffic_retention_days
-            else:
-                if not 1 <= retention_days <= 30:
-                    validation_errors.append("历史保留天数必须在 1 到 30 天之间")
-
+            candidate, validation_errors = ConfigCoordinator.validate_update(
+                settings,
+                self.config,
+                is_ip_address,
+                is_domain,
+            )
             if validation_errors:
                 return {"ok": False, "message": "; ".join(validation_errors)}
-
-            # All validations passed — commit the full candidate exactly once.
-            candidate["srun_host"] = resolved_host
-            candidate["host_ip"] = resolved_ip
-            candidate["self_service"] = self_service
-            candidate["sleeptime"] = reconnect_interval
-            candidate["allow_unverified_tls"] = bool(
-                settings.get("allow_unverified_tls")
-            )
-            candidate["allow_insecure_http"] = bool(
-                settings.get("allow_insecure_http")
-            )
-            candidate["traffic_sampling_enabled"] = bool(
-                settings.get("enabled", True)
-            )
-            candidate["traffic_sample_interval"] = sample_interval
-            candidate["traffic_history_enabled"] = bool(
-                settings.get("history_enabled", True)
-            )
-            candidate["traffic_retention_days"] = retention_days
-            if selected_ips is not None:
-                candidate["local_ips"] = normalized_ips
-                if normalized_ips:
-                    if active_ip in normalized_ips:
-                        candidate["active_ip"] = active_ip
-                    else:
-                        candidate["active_ip"] = normalized_ips[0]
-                else:
-                    candidate["active_ip"] = None
 
             try:
                 save_config(candidate)
