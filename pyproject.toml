@@ -93,6 +93,9 @@ include = ["srunpy*"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
+markers = [
+    "windows_desktop: Tests requiring a real interactive Windows desktop session (DPAPI/tray/shortcut). Skipped by default; run with SRUNPY_RUN_WINDOWS_DESKTOP=1 or -m windows_desktop.",
+]
 
 [tool.coverage.run]
 source = [

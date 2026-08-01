@@ -56,17 +56,30 @@ def Cli() -> None:
         '--list-ips', action='store_true',
         help='列出本机可用IP地址 List local IP addresses'
     )
+    parser.add_argument(
+        '--allow-unverified-tls', action="store_true",
+        help='允许未经验证的HTTPS证书 Allow unverified HTTPS certificates'
+    )
+    parser.add_argument(
+        '--allow-insecure-http', action="store_true",
+        help='允许明文HTTP兼容模式 Allow plaintext HTTP compatibility mode'
+    )
     args = parser.parse_args()
 
     def build_client(bind_ip: Optional[str]):
         """Build SrunClient with specified binding IP / 使用指定的绑定 IP 构建 SrunClient"""
+        client_options = {
+            'allow_unverified_tls': args.allow_unverified_tls,
+            'allow_insecure_http': args.allow_insecure_http,
+        }
         if args.gateway is not None:
             return SrunClient(
                 srun_host=args.gateway,
                 host_ip=args.gateway,
-                client_ip=bind_ip
+                client_ip=bind_ip,
+                **client_options,
             )
-        return SrunClient(client_ip=bind_ip)
+        return SrunClient(client_ip=bind_ip, **client_options)
 
     def list_ips() -> None:
         """List available local IP addresses / 列出可用的本地 IP 地址"""
@@ -77,17 +90,20 @@ def Cli() -> None:
         else:
             for ip in ips:
                 client = build_client(ip)
-                is_available, is_online, online_data = client.is_connected()
-                showstr = f'  - {ip} '
-                if is_available:
-                    showstr += '(网关可用 Available, '
-                    if is_online:
-                        showstr += '已登录 Online)'
+                try:
+                    is_available, is_online, online_data = client.is_connected()
+                    showstr = f'  - {ip} '
+                    if is_available:
+                        showstr += '(网关可用 Available, '
+                        if is_online:
+                            showstr += '已登录 Online)'
+                        else:
+                            showstr += '未登录 Offline)'
                     else:
-                        showstr += '未登录 Offline)'
-                else:
-                    showstr += '(网关不可用 Unavailable)'
-                print(showstr)
+                        showstr += '(网关不可用 Unavailable)'
+                    print(showstr)
+                finally:
+                    client.close()
 
     # Process local IP selections / 处理本地 IP 选择
     available_ips = set(get_local_ipv4_addresses())
@@ -158,14 +174,17 @@ def Cli() -> None:
                 print('\n=== IP:', label, '===')
                 try:
                     client = build_client(bind_ip)
-                    is_available, is_online, online_data = client.is_connected()
-                    print('网络是否可用 Available:', is_available)
-                    print('是否已登录 Online:', is_online)
-                    if not is_available:
-                        operation_failed = True
-                    if is_online:
-                        print('在线信息 Online data:')
-                        print(json.dumps(online_data, indent=4, ensure_ascii=False))
+                    try:
+                        is_available, is_online, online_data = client.is_connected()
+                        print('网络是否可用 Available:', is_available)
+                        print('是否已登录 Online:', is_online)
+                        if not is_available:
+                            operation_failed = True
+                        if is_online:
+                            print('在线信息 Online data:')
+                            print(json.dumps(online_data, indent=4, ensure_ascii=False))
+                    finally:
+                        client.close()
                 except Exception as exc:
                     print('查询失败 Failed to fetch status:', exc)
                     operation_failed = True
@@ -184,11 +203,14 @@ def Cli() -> None:
                 print('\n=== IP:', label, '===')
                 try:
                     client = build_client(bind_ip)
-                    if client.login(username, passwd):
-                        print('登录成功 Login succeeded')
-                    else:
-                        print('登录失败 Login failed')
-                        operation_failed = True
+                    try:
+                        if client.login(username, passwd):
+                            print('登录成功 Login succeeded')
+                        else:
+                            print('登录失败 Login failed')
+                            operation_failed = True
+                    finally:
+                        client.close()
                 except Exception as exc:
                     print('登录失败 Login failed:', exc)
                     operation_failed = True
@@ -198,11 +220,14 @@ def Cli() -> None:
                 print('\n=== IP:', label, '===')
                 try:
                     client = build_client(bind_ip)
-                    if client.logout():
-                        print('注销成功 Logout succeeded')
-                    else:
-                        print('注销失败 Logout failed')
-                        operation_failed = True
+                    try:
+                        if client.logout():
+                            print('注销成功 Logout succeeded')
+                        else:
+                            print('注销失败 Logout failed')
+                            operation_failed = True
+                    finally:
+                        client.close()
                 except Exception as exc:
                     print('注销失败 Logout failed:', exc)
                     operation_failed = True

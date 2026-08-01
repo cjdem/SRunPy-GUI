@@ -280,7 +280,19 @@ class ConfigStore:
     ) -> bool:
         protected_password = disk_config.get("protected_password")
         if protected_password:
-            config["password"] = self.credential_protector.unprotect(str(protected_password))
+            try:
+                config["password"] = self.credential_protector.unprotect(
+                    str(protected_password)
+                )
+            except Exception:
+                # DPAPI 凭据损坏，或配置文件从另一台电脑/另一用户复制导致无法解密时，
+                # 备份原配置、清空凭据并关闭自动登录，保证应用仍能启动；其余设置不丢失。
+                # 磁盘上只会保存备份中的加密密文，绝不落盘明文密码。
+                self._backup_credential_config()
+                config["password"] = ""
+                config["pass_correct"] = False
+                config["auto_login"] = False
+                return True
             return False
 
         legacy_password = disk_config.get("password")
@@ -305,17 +317,34 @@ class ConfigStore:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self.legacy_config_path, self.config_path)
 
+    def _unique_backup_target(self, prefix: str) -> Path:
+        """Return a non-colliding backup path for a given backup prefix."""
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        candidate = self.config_path.with_name(f"{prefix}-{timestamp}.json")
+        index = 1
+        while candidate.exists():
+            candidate = self.config_path.with_name(
+                f"{prefix}-{timestamp}-{index}.json"
+            )
+            index += 1
+        return candidate
+
     def _backup_corrupt_file(self) -> None:
         if not self.config_path.exists():
             return
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = self.config_path.with_name(f"config.corrupt-{timestamp}.json")
+        backup_path = self._unique_backup_target("config.corrupt")
         shutil.move(self.config_path, backup_path)
 
     def _backup_legacy_config(self) -> None:
         """Copy the raw config before it is rewritten without an undecryptable password."""
         if not self.config_path.exists():
             return
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = self.config_path.with_name(f"config.legacy-{timestamp}.json")
+        backup_path = self._unique_backup_target("config.legacy")
+        shutil.copy2(self.config_path, backup_path)
+
+    def _backup_credential_config(self) -> None:
+        """Copy the raw config before its undecryptable credential is cleared."""
+        if not self.config_path.exists():
+            return
+        backup_path = self._unique_backup_target("config.credential")
         shutil.copy2(self.config_path, backup_path)

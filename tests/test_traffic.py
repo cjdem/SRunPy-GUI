@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+import unittest.mock
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,11 @@ from srunpy.traffic import (
     TrafficCounterSample,
     TrafficMonitorService,
 )
-from srunpy.traffic_store import MinuteTrafficRecord, TrafficHistoryStore
+from srunpy.traffic_store import (
+    MinuteTrafficRecord,
+    TrafficHistoryStore,
+    anonymize_interface_id,
+)
 
 
 class SequenceCounterProvider:
@@ -242,3 +247,124 @@ def test_minute_rotation_persists_raw_average_and_peak(tmp_path: Path) -> None:
     assert history[0]["received_bytes"] == 600
     assert history[0]["download_bytes_per_second"] == 600
     assert history[0]["peak_download_bytes_per_second"] == 600
+
+
+def test_store_get_history_filters_by_interface_id(tmp_path: Path) -> None:
+    store = TrafficHistoryStore(tmp_path / "traffic.db")
+    current_time = 10 * 24 * 60 * 60
+    wifi = anonymize_interface_id("Wi-Fi")
+    ethernet = anonymize_interface_id("Ethernet")
+    store.write_many(
+        [
+            MinuteTrafficRecord(
+                minute_utc=current_time - 60,
+                interface_id=wifi,
+                interface_name="Wi-Fi",
+                received_bytes=600,
+                sent_bytes=300,
+                average_download_bytes_per_second=10.0,
+                average_upload_bytes_per_second=5.0,
+                peak_download_bytes_per_second=20.0,
+                peak_upload_bytes_per_second=10.0,
+                sample_count=1,
+                gap_count=0,
+            ),
+            MinuteTrafficRecord(
+                minute_utc=current_time - 60,
+                interface_id=ethernet,
+                interface_name="Ethernet",
+                received_bytes=999,
+                sent_bytes=999,
+                average_download_bytes_per_second=88.0,
+                average_upload_bytes_per_second=88.0,
+                peak_download_bytes_per_second=88.0,
+                peak_upload_bytes_per_second=88.0,
+                sample_count=1,
+                gap_count=0,
+            ),
+        ]
+    )
+
+    wifi_history = store.get_history(
+        "24h", current_time=current_time, interface_id=wifi
+    )
+
+    assert len(wifi_history) == 1
+    assert wifi_history[0]["received_bytes"] == 600
+    assert wifi_history[0]["download_bytes_per_second"] == 10.0
+
+
+def test_monitor_get_history_scopes_to_current_interface(tmp_path: Path) -> None:
+    monitor = create_monitor(
+        tmp_path,
+        [create_sample(1000, 500, 10.0, 120.0)],
+    )
+    # Establish the "current" interface by taking one sample.
+    monitor.sample_once()
+    assert monitor._current_interface_id == anonymize_interface_id("Wi-Fi")
+
+    current_time = 10 * 24 * 60 * 60
+    other_id = anonymize_interface_id("Ethernet")
+    monitor.history_store.write_many(
+        [
+            MinuteTrafficRecord(
+                minute_utc=current_time,
+                interface_id=monitor._current_interface_id,
+                interface_name="Wi-Fi",
+                received_bytes=600,
+                sent_bytes=300,
+                average_download_bytes_per_second=10.0,
+                average_upload_bytes_per_second=5.0,
+                peak_download_bytes_per_second=20.0,
+                peak_upload_bytes_per_second=10.0,
+                sample_count=1,
+                gap_count=0,
+            ),
+            MinuteTrafficRecord(
+                minute_utc=current_time,
+                interface_id=other_id,
+                interface_name="Ethernet",
+                received_bytes=1,
+                sent_bytes=1,
+                average_download_bytes_per_second=1.0,
+                average_upload_bytes_per_second=1.0,
+                peak_download_bytes_per_second=1.0,
+                peak_upload_bytes_per_second=1.0,
+                sample_count=1,
+                gap_count=0,
+            ),
+        ]
+    )
+
+    with unittest.mock.patch("srunpy.traffic.time.time", return_value=current_time):
+        history = monitor.get_history("24h")
+
+    assert len(history) == 1
+    assert history[0]["received_bytes"] == 600
+
+
+def test_periodic_cleanup_runs_only_when_overdue(tmp_path: Path) -> None:
+    monitor = create_monitor(tmp_path, [])
+    cleanup_calls: list[int] = []
+    monitor.history_store.cleanup = lambda _retention: cleanup_calls.append(1) or 0
+
+    # Freshly started: not overdue -> no cleanup yet.
+    monitor._last_cleanup_time = time.monotonic()
+    monitor._maybe_cleanup()
+    assert cleanup_calls == []
+
+    # Over one hour elapsed -> cleanup runs.
+    monitor._last_cleanup_time = time.monotonic() - 7200.0
+    monitor._maybe_cleanup()
+    assert len(cleanup_calls) == 1
+
+    # Right after a cleanup: not overdue again.
+    monitor._last_cleanup_time = time.monotonic()
+    monitor._maybe_cleanup()
+    assert len(cleanup_calls) == 1
+
+    # History disabled never purges.
+    monitor.history_enabled = False
+    monitor._last_cleanup_time = time.monotonic() - 7200.0
+    monitor._maybe_cleanup()
+    assert len(cleanup_calls) == 1

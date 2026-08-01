@@ -129,6 +129,13 @@ srunpy-cli --info `
   --local-ip 10.1.1.8
 ```
 
+如果网关使用自签名证书或仅支持明文 HTTP，可传入与客户端设置一致的兼容选项（默认关闭）：
+
+```powershell
+srunpy-cli --login --username <用户名> --allow-unverified-tls
+srunpy-cli --login --username <用户名> --allow-insecure-http
+```
+
 操作完全成功时退出码为 `0`；查询不可达或登录/注销失败时退出码为非零值。
 
 ## 连接安全

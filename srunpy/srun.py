@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -335,6 +336,8 @@ class Srun_Py:
         self.allow_unverified_tls = allow_unverified_tls
         self.allow_insecure_http = allow_insecure_http
         self.last_error: Optional[SrunError] = None
+        self._request_lock = threading.RLock()
+        self._closed = False
         self.session = requests.Session()
         self.session.trust_env = trust_environment
         if self.client_ip:
@@ -393,6 +396,21 @@ class Srun_Py:
         params: Optional[Mapping[str, Any]] = None,
         allow_redirects: bool = True,
     ) -> requests.Response:
+        """Serialize per-client network access and guard against a closed session."""
+        with self._request_lock:
+            if self._closed:
+                raise GatewayUnavailableError("客户端连接已关闭")
+            return self._request_unlocked(
+                path, params=params, allow_redirects=allow_redirects
+            )
+
+    def _request_unlocked(
+        self,
+        path: str,
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        allow_redirects: bool = True,
+    ) -> requests.Response:
         """Send a GET request using only explicitly enabled transport fallbacks."""
         last_error: Optional[SrunError] = None
         normalized_path = path if path.startswith("/") else f"/{path}"
@@ -437,7 +455,9 @@ class Srun_Py:
 
     def close(self) -> None:
         """Close pooled network connections owned by this client."""
-        self.session.close()
+        with self._request_lock:
+            self._closed = True
+            self.session.close()
 
     def __enter__(self) -> "Srun_Py":
         return self

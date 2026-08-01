@@ -140,3 +140,50 @@ def test_exposed_backend_api_matches_javascript_usage() -> None:
     used = set(re.findall(r"backend\.(\w+)", script_text))
 
     assert exposed == used
+
+
+def test_pyproject_entry_points_reference_existing_callables() -> None:
+    """Every declared console/gui entry point must resolve to a real callable."""
+    import tomllib
+
+    project_root = Path(__file__).parents[1]
+    with open(project_root / "pyproject.toml", "rb") as handle:
+        pyproject = tomllib.load(handle)
+
+    scripts = pyproject["project"]["scripts"]
+    gui_scripts = pyproject.get("project", {}).get("gui-scripts", {})
+    all_entries = {**scripts, **gui_scripts}
+    assert all_entries, "expected at least one console entry point"
+
+    for entry_path in all_entries.values():
+        module_name, separator, attribute = entry_path.partition(":")
+        assert separator == ":"
+        module = __import__(module_name, fromlist=[attribute])
+        assert callable(getattr(module, attribute)), entry_path
+
+
+def test_single_instance_module_exposes_expected_api() -> None:
+    """The single-instance coordinator must expose the expected cooperative API."""
+    from srunpy.single_instance import WindowsSingleInstance
+
+    assert WindowsSingleInstance._ERROR_ALREADY_EXISTS == 183
+    for method_name in ("close", "__enter__", "__exit__"):
+        assert callable(getattr(WindowsSingleInstance, method_name))
+
+    instance = object.__new__(WindowsSingleInstance)
+    assert instance.__enter__() is instance
+
+
+def test_pyproject_package_data_includes_desktop_resources() -> None:
+    """Declared package data must cover the desktop HTML/CSS/JS/font resources."""
+    import tomllib
+
+    project_root = Path(__file__).parents[1]
+    with open(project_root / "pyproject.toml", "rb") as handle:
+        pyproject = tomllib.load(handle)
+
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+    html_patterns = "".join(package_data["srunpy.html"])
+
+    for required_pattern in ("*.html", "*.css", "*.js", "*.png", "*.ttf", "icons/*"):
+        assert required_pattern in html_patterns, required_pattern

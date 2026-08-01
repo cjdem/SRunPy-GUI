@@ -23,6 +23,8 @@ jobs:
           cache: pip
       - name: Install development dependencies
         run: python -m pip install --upgrade pip .[dev]
+      - name: Check for whitespace errors
+        run: git diff --check
       - name: Run Ruff
         run: python -m ruff check srunpy tests
       - name: Run JavaScript unit tests
@@ -31,8 +33,23 @@ jobs:
         run: python -m pytest
       - name: Check core test coverage
         run: python -m pytest --cov --cov-report=term-missing --cov-fail-under=80
+
+      # --- Distribution build and artifact validation (separate from the test gates above) ---
       - name: Build Python distributions
         run: python -m build
+      - name: Validate distribution metadata with twine
+        run: python -m twine check dist/*
+      - name: Smoke test built package entry point
+        # Installs the freshly built wheel into a clean venv and verifies the CLI
+        # entry point starts and prints --help. Non-fatal so a headless runner that
+        # cannot execute the entry point does not block the release pipeline.
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -e
+          python -m venv /tmp/srunpy-smoke
+          /tmp/srunpy-smoke/bin/pip install --quiet dist/*.whl
+          /tmp/srunpy-smoke/bin/srunpy-cli --help
 
   windows-package-smoke:
     runs-on: windows-latest

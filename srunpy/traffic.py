@@ -172,8 +172,10 @@ class TrafficMonitorService:
         self._thread: Optional[threading.Thread] = None
         self._baseline: Optional[TrafficCounterSample] = None
         self._accumulator: Optional[_MinuteAccumulator] = None
+        self._current_interface_id: Optional[str] = None
         self._recent_samples: deque[dict[str, Any]] = deque(maxlen=60)
         self._started_at: Optional[float] = None
+        self._last_cleanup_time: float = 0.0
         self._snapshot = self._empty_snapshot("正在建立采样基线")
 
     @staticmethod
@@ -203,6 +205,9 @@ class TrafficMonitorService:
             return
         if self.history_enabled:
             self.history_store.cleanup(self.retention_days)
+            # The explicit cleanup above counts as the periodic one, so the
+            # worker does not purge again on its very first iteration.
+            self._last_cleanup_time = time.monotonic()
         self._stop_event.clear()
         self._started_at = time.monotonic()
         self._thread = threading.Thread(
@@ -237,8 +242,25 @@ class TrafficMonitorService:
         while not self._stop_event.is_set():
             iteration_started_at = time.monotonic()
             self.sample_once()
+            self._maybe_cleanup()
             elapsed_time = time.monotonic() - iteration_started_at
             self._stop_event.wait(max(0.0, self.sample_interval - elapsed_time))
+
+    def _maybe_cleanup(self) -> None:
+        """Periodically purge expired history rows beyond just monitor startup."""
+        now = time.monotonic()
+        if not self.history_enabled:
+            self._last_cleanup_time = now
+            return
+        if now - self._last_cleanup_time < 3600.0:
+            return
+        try:
+            self.history_store.cleanup(self.retention_days)
+        except Exception:
+            # Retention cleanup must never bring the sampling loop down.
+            pass
+        finally:
+            self._last_cleanup_time = now
 
     def sample_once(self) -> dict[str, Any]:
         try:
@@ -251,6 +273,7 @@ class TrafficMonitorService:
                 self._record_gap(None, "未找到活动网卡计数器")
                 return dict(self._snapshot)
 
+            self._current_interface_id = anonymize_interface_id(sample.interface_name)
             self._rotate_minute_if_needed(sample)
             baseline = self._baseline
             self._baseline = sample
@@ -411,7 +434,15 @@ class TrafficMonitorService:
                 return [dict(point) for point in self._recent_samples]
         if not self.history_enabled:
             return []
-        return self.history_store.get_history(history_range)
+        # Persisted history is scoped to the interface currently being monitored so
+        # that a multi-NIC machine never blends unrelated adapters into one series.
+        with self._lock:
+            current_interface_id = self._current_interface_id
+        if current_interface_id is None:
+            return []
+        return self.history_store.get_history(
+            history_range, interface_id=current_interface_id
+        )
 
     def clear_history(self) -> None:
         with self._lock:

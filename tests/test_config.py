@@ -1,4 +1,6 @@
 import json
+import unittest.mock
+from datetime import datetime
 from pathlib import Path
 
 from srunpy.config import CONFIG_SCHEMA_VERSION, ConfigStore
@@ -189,3 +191,107 @@ def test_undecryptable_legacy_password_is_backed_up_and_cleared(tmp_path: Path) 
     disk_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert "password" not in disk_config
     assert disk_config["protected_password"] == ""
+
+
+class FailingProtector:
+    """Test double whose unprotect always fails (simulates corrupt/cross-user DPAPI)."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.protected_seen = []
+
+    def protect(self, plaintext: str) -> str:
+        return f"protected::{plaintext}"
+
+    def unprotect(self, protected_value: str) -> str:
+        self.protected_seen.append(protected_value)
+        raise self._error
+
+
+def test_undecryptable_dpapi_credential_is_backed_up_and_cleared(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "username": "student",
+                "protected_password": "AAAA-not-valid-base64!!",
+                "pass_correct": True,
+                "auto_login": True,
+                "sleeptime": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    protector = FailingProtector(ValueError("corrupt protected value"))
+    store = ConfigStore(config_path, protector)
+
+    config = store.load()
+
+    # Other settings are preserved.
+    assert config["username"] == "student"
+    assert config["sleeptime"] == 5
+    # Credential is cleared and auto-login is disabled so the app can start.
+    assert config["password"] == ""
+    assert config["pass_correct"] is False
+    assert config["auto_login"] is False
+    # The original encrypted blob was the failing value.
+    assert protector.protected_seen == ["AAAA-not-valid-base64!!"]
+
+    backups = list(tmp_path.glob("config.credential-*.json"))
+    assert len(backups) == 1
+    backup_data = json.loads(backups[0].read_text(encoding="utf-8"))
+    assert backup_data["protected_password"] == "AAAA-not-valid-base64!!"
+    # No plaintext password is ever written to disk.
+    disk_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "password" not in disk_config
+    assert disk_config["protected_password"] == ""
+
+
+def test_cross_user_dpapi_credential_recovers_without_plaintext(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "username": "student",
+                "protected_password": "encrypted-for-another-user",
+                "pass_correct": True,
+                "auto_login": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    protector = FailingProtector(RuntimeError("wrong user scope"))
+    store = ConfigStore(config_path, protector)
+
+    config = store.load()
+
+    assert config["password"] == ""
+    assert config["auto_login"] is False
+    disk_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "password" not in disk_config
+    assert disk_config["protected_password"] == ""
+
+
+def test_credential_backup_does_not_collide_on_same_second(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    # Pre-existing backup that would collide with the new timestamp-based name.
+    collide = tmp_path / "config.credential-20200101-000000.json"
+    collide.write_text("occupied", encoding="utf-8")
+
+    config_path.write_text(
+        json.dumps({"username": "student", "protected_password": "bad"}),
+        encoding="utf-8",
+    )
+    store = ConfigStore(config_path, FailingProtector(ValueError("boom")))
+    with unittest.mock.patch("srunpy.config.datetime") as fake_datetime:
+        fake_datetime.now.return_value = datetime(2020, 1, 1, 0, 0, 0)
+        store.load()
+
+    backups = sorted(tmp_path.glob("config.credential-*.json"))
+    assert len(backups) == 2
+    assert collide.read_text(encoding="utf-8") == "occupied"
+    # The new backup used the collision-free suffix rather than overwriting.
+    assert {b.name for b in backups} == {
+        "config.credential-20200101-000000.json",
+        "config.credential-20200101-000000-1.json",
+    }

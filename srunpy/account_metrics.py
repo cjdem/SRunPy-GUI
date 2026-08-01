@@ -72,12 +72,15 @@ def normalize_account_metrics(
     )
     balance = _normalize_balance(source.get("user_balance")) if is_online else None
 
+    # 在线时长与账号/余额/流量一样，只在确认在线时才是可信的；离线时必须清空，
+    # 否则残留载荷中的陈旧 online_seconds 会被当作活跃会话展示。
     online_duration_seconds = None
-    for field_name in ("online_seconds", "online_time", "user_online_time"):
-        candidate_value = _normalize_non_negative_integer(source.get(field_name))
-        if candidate_value is not None:
-            online_duration_seconds = candidate_value
-            break
+    if is_online:
+        for field_name in ("online_seconds", "online_time", "user_online_time"):
+            candidate_value = _normalize_non_negative_integer(source.get(field_name))
+            if candidate_value is not None:
+                online_duration_seconds = candidate_value
+                break
 
     return AccountMetrics(
         username=username,

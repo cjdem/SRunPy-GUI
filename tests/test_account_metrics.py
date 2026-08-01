@@ -46,10 +46,18 @@ def test_rejects_missing_null_fractional_and_negative_numeric_fields() -> None:
 
 def test_offline_payload_does_not_expose_stale_account_values() -> None:
     metrics = normalize_account_metrics(
-        {"user_name": "student", "sum_bytes": 42, "user_balance": 10},
+        {
+            "user_name": "student",
+            "sum_bytes": 42,
+            "user_balance": 10,
+            "online_seconds": 3600,
+        },
         is_online=False,
     )
 
     assert metrics.username is None
     assert metrics.account_total_bytes is None
     assert metrics.balance is None
+    # The stale online-duration field must be cleared too, not surfaced as live.
+    assert metrics.online_duration_seconds is None
+    assert metrics.capabilities["online_duration"] is False

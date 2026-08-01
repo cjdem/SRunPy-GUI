@@ -1,4 +1,11 @@
-"""SQLite persistence for minute-level local network traffic aggregates."""
+"""SQLite persistence for minute-level local network traffic aggregates.
+
+Product decision: the ``interface_name`` column is intentionally kept even though
+``interface_id`` (a SHA-256 digest) is the stable primary key. The plaintext name is
+the human-readable NIC label needed for the frontend to distinguish DNS/interface
+rows; ``interface_id`` remains the canonical key so rows are de-duplicated and
+queried by interface without exposing raw identity beyond the local machine.
+"""
 
 import hashlib
 import os
@@ -153,20 +160,27 @@ class TrafficHistoryStore:
         *,
         maximum_points: int = 2016,
         current_time: Optional[float] = None,
+        interface_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         if history_range not in self._RANGE_SECONDS:
             raise ValueError("不支持的历史范围")
         bounded_maximum_points = min(max(int(maximum_points), 1), 2016)
         effective_time = time.time() if current_time is None else current_time
         cutoff_minute = int(effective_time - self._RANGE_SECONDS[history_range]) // 60 * 60
+        if interface_id:
+            where_clause = "minute_utc >= ? AND interface_id = ?"
+            query_params: tuple[Any, ...] = (cutoff_minute, interface_id)
+        else:
+            where_clause = "minute_utc >= ?"
+            query_params = (cutoff_minute,)
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT * FROM traffic_minutes
-                WHERE minute_utc >= ?
+                WHERE {where_clause}
                 ORDER BY minute_utc ASC
                 """,
-                (cutoff_minute,),
+                query_params,
             ).fetchall()
         records = [dict(row) for row in rows]
         return self._downsample(records, bounded_maximum_points)

@@ -410,6 +410,11 @@ class GUIBackend:
                 "无法读取应用配置；原配置已保留，请检查 Windows 凭据或配置文件权限"
             ) from error
 
+        # Stop the reconnect worker before replacing pooled clients so no
+        # background thread is mid-flight on a client we are about to close.
+        if self.reconnect_service is not None:
+            self.reconnect_service.stop()
+
         self._rebuild_clients()
         self._ensure_active_ip()
         self.srun = self.get_client()
@@ -644,41 +649,13 @@ class GUIBackend:
             return target, resolved_ip
         raise ValueError("无法解析网关地址，请检查输入")
 
-    def _update_gateway_only(self, srun_host: str, self_service: str) -> bool:
-        """
-        Update gateway configuration only.
-        仅更新网关配置。
-
-        Args / 参数:
-            srun_host: Gateway host / 网关主机
-            self_service: Self-service URL / 自助服务 URL
-
-        Returns / 返回:
-            True if successful / 成功返回 True
-        """
-        try:
-            resolved_host, resolved_ip = self._parse_gateway(srun_host)
-        except ValueError:
-            return False
-        self.config['srun_host'] = resolved_host
-        self.config['host_ip'] = resolved_ip
-        self.config['self_service'] = self_service
-        return True
-
-    def _update_local_ip_selection(
-            self, selected_ips: Optional[List[Optional[str]]],
-            active_ip: Optional[str]) -> None:
-        """
-        Update local IP selection in configuration.
-        更新配置中的本地 IP 选择。
-
-        Args / 参数:
-            selected_ips: List of selected IPs / 选定的 IP 列表
-            active_ip: Active IP / 活动 IP
-        """
+    def _normalize_ip_selection(
+        self,
+        selected_ips: Optional[List[Optional[str]]],
+    ) -> List[Optional[str]]:
+        """Return the de-duplicated, locally-available IP selection (pure, no mutation)."""
         if selected_ips is None:
-            return
-
+            return []
         normalized: List[Optional[str]] = []
         available = set(get_local_ipv4_addresses())
         for ip in selected_ips:
@@ -686,26 +663,13 @@ class GUIBackend:
                 normalized.append(None)
             elif ip in available:
                 normalized.append(ip)
-
-        if normalized:
-            # Remove duplicates while preserving order
-            # 去除重复项同时保留顺序
-            ordered: List[Optional[str]] = []
-            for ip in normalized:
-                if ip not in ordered:
-                    ordered.append(ip)
-            normalized = ordered
-        else:
-            normalized = []
-
-        self.config['local_ips'] = normalized
-        if normalized:
-            if active_ip in normalized:
-                self.config['active_ip'] = active_ip
-            else:
-                self.config['active_ip'] = normalized[0]
-        else:
-            self.config['active_ip'] = None
+        # Remove duplicates while preserving order
+        # 去除重复项同时保留顺序
+        ordered: List[Optional[str]] = []
+        for ip in normalized:
+            if ip not in ordered:
+                ordered.append(ip)
+        return ordered
 
     def probe_gateway_ips(self, gateway: str,
                           self_service: Optional[str] = None) -> Dict[str, Any]:
@@ -955,32 +919,111 @@ class GUIBackend:
             "points": self.traffic_monitor.get_history(history_range),
         }
 
-    def update_traffic_preferences(self, settings: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and persist only traffic-monitor preferences."""
+    def update_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate the whole candidate config first, then commit once (transactional).
+
+        On any validation failure the in-memory config, the config file, and the
+        running services are left untouched. A valid candidate is persisted and
+        refreshed exactly once.
+        """
         with self._backend_lock:
+            candidate = dict(self.config)
+            validation_errors: List[str] = []
+
+            gateway = str(settings.get("gateway", "")).strip()
+            self_service = str(settings.get("self_service", "")).strip()
+            try:
+                resolved_host, resolved_ip = self._parse_gateway(gateway)
+            except ValueError:
+                validation_errors.append("无法解析网关地址，请检查输入")
+                resolved_host, resolved_ip = (
+                    candidate["srun_host"],
+                    candidate["host_ip"],
+                )
+
+            try:
+                reconnect_interval = int(
+                    settings.get("reconnect_interval", self.sleeptime)
+                )
+            except (TypeError, ValueError):
+                validation_errors.append("重连间隔必须是整数")
+                reconnect_interval = self.sleeptime
+            else:
+                if not 3 <= reconnect_interval <= 300:
+                    validation_errors.append("重连间隔必须在 3 到 300 秒之间")
+
+            selected_ips = settings.get("selected_ips")
+            active_ip = settings.get("active_ip")
+            normalized_ips: List[Optional[str]] = []
+            if selected_ips is not None:
+                normalized_ips = self._normalize_ip_selection(selected_ips)
+                if (
+                    active_ip is not None
+                    and normalized_ips
+                    and active_ip not in normalized_ips
+                ):
+                    validation_errors.append("所选活动接口无效")
+
             try:
                 sample_interval = float(
                     settings.get("sample_interval", self.traffic_sample_interval)
                 )
+            except (TypeError, ValueError):
+                validation_errors.append("采样间隔必须是数字")
+                sample_interval = self.traffic_sample_interval
+            else:
+                if not 0.5 <= sample_interval <= 5.0:
+                    validation_errors.append("采样间隔必须在 0.5 到 5 秒之间")
+
+            try:
                 retention_days = int(
                     settings.get("retention_days", self.traffic_retention_days)
                 )
             except (TypeError, ValueError):
-                return {"ok": False, "message": "采样间隔或保留天数无效"}
-            if not 0.5 <= sample_interval <= 5.0:
-                return {"ok": False, "message": "采样间隔必须在 0.5 到 5 秒之间"}
-            if not 1 <= retention_days <= 30:
-                return {"ok": False, "message": "历史保留天数必须在 1 到 30 天之间"}
+                validation_errors.append("历史保留天数必须是整数")
+                retention_days = self.traffic_retention_days
+            else:
+                if not 1 <= retention_days <= 30:
+                    validation_errors.append("历史保留天数必须在 1 到 30 天之间")
 
-            self.config["traffic_sampling_enabled"] = bool(settings.get("enabled", True))
-            self.config["traffic_sample_interval"] = sample_interval
-            self.config["traffic_history_enabled"] = bool(
+            if validation_errors:
+                return {"ok": False, "message": "; ".join(validation_errors)}
+
+            # All validations passed — commit the full candidate exactly once.
+            candidate["srun_host"] = resolved_host
+            candidate["host_ip"] = resolved_ip
+            candidate["self_service"] = self_service
+            candidate["sleeptime"] = reconnect_interval
+            candidate["allow_unverified_tls"] = bool(
+                settings.get("allow_unverified_tls")
+            )
+            candidate["allow_insecure_http"] = bool(
+                settings.get("allow_insecure_http")
+            )
+            candidate["traffic_sampling_enabled"] = bool(
+                settings.get("enabled", True)
+            )
+            candidate["traffic_sample_interval"] = sample_interval
+            candidate["traffic_history_enabled"] = bool(
                 settings.get("history_enabled", True)
             )
-            self.config["traffic_retention_days"] = retention_days
-            save_config(self.config)
-            self.refresh_config()
-            return {"ok": True, "message": "流量监控设置已保存"}
+            candidate["traffic_retention_days"] = retention_days
+            if selected_ips is not None:
+                candidate["local_ips"] = normalized_ips
+                if normalized_ips:
+                    if active_ip in normalized_ips:
+                        candidate["active_ip"] = active_ip
+                    else:
+                        candidate["active_ip"] = normalized_ips[0]
+                else:
+                    candidate["active_ip"] = None
+
+            try:
+                save_config(candidate)
+                self.refresh_config()
+            except Exception as error:
+                return {"ok": False, "message": f"保存设置失败: {error}"}
+            return {"ok": True, "message": "设置已保存"}
 
     def clear_traffic_history(self) -> Dict[str, Any]:
         """Delete persisted and in-memory traffic history."""
@@ -1038,37 +1081,6 @@ class GUIBackend:
                 "ok": logout_succeeded,
                 "message": "已注销" if logout_succeeded else "注销失败，请稍后重试",
             }
-
-    def update_preferences(self, settings: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and atomically apply desktop settings from the new UI."""
-        with self._backend_lock:
-            gateway = str(settings.get("gateway", "")).strip()
-            self_service = str(settings.get("self_service", "")).strip()
-            if not self._update_gateway_only(gateway, self_service):
-                return {"ok": False, "message": "无法解析网关地址，请检查输入"}
-
-            try:
-                reconnect_interval = int(
-                    settings.get("reconnect_interval", self.sleeptime)
-                )
-            except (TypeError, ValueError):
-                return {"ok": False, "message": "重连间隔必须是整数"}
-            if not 3 <= reconnect_interval <= 300:
-                return {"ok": False, "message": "重连间隔必须在 3 到 300 秒之间"}
-
-            selected_ips = settings.get("selected_ips")
-            active_ip = settings.get("active_ip")
-            self._update_local_ip_selection(selected_ips, active_ip)
-            self.config["sleeptime"] = reconnect_interval
-            self.config["allow_unverified_tls"] = bool(
-                settings.get("allow_unverified_tls")
-            )
-            self.config["allow_insecure_http"] = bool(
-                settings.get("allow_insecure_http")
-            )
-            save_config(self.config)
-            self.refresh_config()
-            return {"ok": True, "message": "设置已保存"}
 
     def start_self_service(self, ip: Optional[str] = None) -> None:
         """
@@ -1186,11 +1198,10 @@ class MainWindow:
             self.srunpy.get_connection_status,
             self.srunpy.get_traffic_snapshot,
             self.srunpy.get_traffic_history,
-            self.srunpy.update_traffic_preferences,
+            self.srunpy.update_settings,
             self.srunpy.clear_traffic_history,
             self.srunpy.perform_login,
             self.srunpy.perform_logout,
-            self.srunpy.update_preferences,
             self.srunpy.set_start_with_windows,
             self.srunpy.set_auto_login,
             self.srunpy.start_self_service,

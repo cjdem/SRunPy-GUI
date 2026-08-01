@@ -775,7 +775,7 @@ async function saveSettings(event) {
   elements["save-settings-button"].disabled = true;
   setMessage(elements["settings-message"], "正在保存设置...");
   try {
-    const result = await backend.update_preferences({
+    const result = await backend.update_settings({
       gateway: elements["gateway-input"].value,
       self_service: elements["self-service-input"].value,
       reconnect_interval: Number(elements["reconnect-interval-input"].value),
@@ -783,19 +783,13 @@ async function saveSettings(event) {
       active_ip: interfaceSettings.activeIp,
       allow_unverified_tls: elements["unverified-tls-toggle"].checked,
       allow_insecure_http: elements["insecure-http-toggle"].checked,
-    });
-    if (!result.ok) {
-      setMessage(elements["settings-message"], result.message, "error");
-      return;
-    }
-    const trafficResult = await backend.update_traffic_preferences({
       enabled: elements["traffic-sampling-toggle"].checked,
       sample_interval: applicationState.config.traffic_sample_interval || 1,
       history_enabled: elements["traffic-history-toggle"].checked,
       retention_days: Number(elements["traffic-retention-input"].value),
     });
-    if (!trafficResult.ok) {
-      setMessage(elements["settings-message"], trafficResult.message, "error");
+    if (!result.ok) {
+      setMessage(elements["settings-message"], result.message, "error");
       return;
     }
     applicationState.config = await backend.get_app_state();
