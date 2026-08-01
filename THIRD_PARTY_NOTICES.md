@@ -24,6 +24,7 @@ The project declares the following direct dependencies in `pyproject.toml`:
 - pystray
 - pywebview
 - pywin32
+- winotify
 - Nuitka (build-time)
 
 A Windows standalone build may bundle these projects and their transitive dependencies. Before publishing a release, generate an inventory from the actual locked or installed build environment and include all license files and notices required by those exact versions. Package metadata and upstream repositories are the authoritative sources; this document intentionally does not assign a license based only on a package name.

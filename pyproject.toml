@@ -31,6 +31,7 @@ classifiers = [
     "Operating System :: Microsoft :: Windows :: Windows 11",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
@@ -42,6 +43,7 @@ dependencies = [
     "pystray>=0.19.5; sys_platform == 'win32'",
     "pywebview>=5; sys_platform == 'win32'",
     "pywin32>=306; sys_platform == 'win32'",
+    "winotify>=1.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -91,6 +93,19 @@ include = ["srunpy*"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = [
+    "srunpy.account_metrics",
+    "srunpy.config",
+    "srunpy.errors",
+    "srunpy.ip_utils",
+    "srunpy.reconnect",
+    "srunpy.srun",
+    "srunpy.traffic",
+    "srunpy.traffic_store",
+    "srunpy.update",
+]
 
 [tool.ruff]
 line-length = 100

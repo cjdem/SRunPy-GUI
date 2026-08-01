@@ -5,6 +5,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -55,10 +56,20 @@ class TrafficHistoryStore:
         self._lock = threading.RLock()
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
+        """Open a connection and always close it, even on exceptions."""
         connection = sqlite3.connect(self.database_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            yield connection
+        except Exception:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)

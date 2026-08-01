@@ -10,6 +10,7 @@
     <title>SRunPy 校园网控制台</title>
     <link rel="icon" href="./favicon.png" />
     <link rel="stylesheet" href="./style.css" />
+    <script src="./utils.js" defer></script>
     <script src="./script.js" defer></script>
   </head>
   <body>
@@ -63,6 +64,15 @@
         </div>
 
         <div class="topbar-actions">
+          <a
+            id="update-banner"
+            class="update-banner"
+            href="https://github.com/cjdem/SRunPy-GUI/releases/latest"
+            rel="noopener"
+            hidden
+          >
+            发现新版本，点击查看
+          </a>
           <span id="live-badge" class="live-badge" data-state="loading">
             <span class="live-dot" aria-hidden="true"></span>
             <span id="live-badge-text">检查中</span>
@@ -87,6 +97,14 @@
             <span>活动线路</span>
             <select id="interface-select" aria-label="选择活动网络线路"></select>
           </label>
+          <button
+            id="retry-connection-button"
+            class="secondary-button"
+            type="button"
+            hidden
+          >
+            断网重试
+          </button>
           <div class="status-meta">
             <span>最近检查</span>
             <strong id="last-updated-label">--:--:--</strong>

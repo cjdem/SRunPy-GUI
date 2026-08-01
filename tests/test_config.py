@@ -117,3 +117,75 @@ def test_traffic_preferences_are_normalized_to_safe_bounds(tmp_path: Path) -> No
     assert config["traffic_sample_interval"] == 5.0
     assert config["traffic_history_enabled"] is True
     assert config["traffic_retention_days"] == 1
+
+
+def test_misc_fields_are_normalized_to_safe_values(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "sleeptime": "abc",
+                "srun_host": "  ",
+                "host_ip": None,
+                "self_service": " zfw.example.edu ",
+                "local_ips": ["10.0.0.2", "not-an-ip", None, 123, "10.0.0.2", "null"],
+                "active_ip": "192.168.1.99",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = create_store(config_path).load()
+
+    assert config["sleeptime"] == 5
+    assert config["srun_host"] == "gw.buaa.edu.cn"
+    assert config["host_ip"] == "gw.buaa.edu.cn"
+    assert config["self_service"] == "zfw.example.edu"
+    assert config["local_ips"] == ["10.0.0.2", None]
+    assert config["active_ip"] == "10.0.0.2"
+
+
+def test_sleeptime_and_ip_selection_are_clamped(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "sleeptime": 1000,
+                "local_ips": [],
+                "active_ip": "10.0.0.1",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = create_store(config_path).load()
+
+    assert config["sleeptime"] == 300
+    assert config["local_ips"] == [None]
+    assert config["active_ip"] is None
+
+
+def test_undecryptable_legacy_password_is_backed_up_and_cleared(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"username": "student", "password": "legacy-ciphertext"}),
+        encoding="utf-8",
+    )
+
+    def broken_decryptor(_: str) -> str:
+        raise ValueError("wrong legacy key")
+
+    store = create_store(config_path, legacy_password_decryptor=broken_decryptor)
+
+    config = store.load()
+
+    assert config["username"] == "student"
+    assert config["password"] == ""
+    backups = list(tmp_path.glob("config.legacy-*.json"))
+    assert len(backups) == 1
+    assert json.loads(backups[0].read_text(encoding="utf-8"))["password"] == (
+        "legacy-ciphertext"
+    )
+    disk_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "password" not in disk_config
+    assert disk_config["protected_password"] == ""

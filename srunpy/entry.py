@@ -213,13 +213,10 @@ def Cli() -> None:
         raise SystemExit(1)
 
 
-def Gui(aes_key: Optional[str] = None) -> None:
+def Gui() -> None:
     """
     Graphical user interface for SRun authentication (Windows only).
     SRun 认证的图形用户界面（仅限 Windows）。
-
-    Args / 参数:
-        aes_key: AES encryption key for config storage / 用于配置存储的 AES 加密密钥
     """
     if platform.system() != 'Windows':
         print('此命令仅支持Windows系统 This command is only supported on Windows system')
@@ -249,10 +246,7 @@ def Gui(aes_key: Optional[str] = None) -> None:
 
         srunpy = None
         try:
-            if aes_key is not None:
-                srunpy = GUIBackend(use_qt=args.qt, aes_key=aes_key)
-            else:
-                srunpy = GUIBackend(use_qt=args.qt)
+            srunpy = GUIBackend(use_qt=args.qt)
 
             main_window = MainWindow(srunpy, not args.no_auto_open)
             while True:
@@ -301,10 +295,6 @@ def Build() -> None:
         help='输出文件夹路径 Output folder path'
     )
     parser.add_argument(
-        '--default_key', action="store_true",
-        help='使用默认密钥 Use default key'
-    )
-    parser.add_argument(
         '--icon', default=None,
         help='图标路径 Icon path'
     )
@@ -327,8 +317,6 @@ def Build() -> None:
     args = parser.parse_args()
 
     import os
-    import random
-    import string
     import sys
 
     python_path = os.path.abspath(sys.executable)
@@ -361,13 +349,9 @@ def Build() -> None:
             return
 
     # Generate entry point file / 生成入口点文件
-    aes_key = ''.join(random.sample(string.ascii_letters + string.digits, 16))
     with open(os.path.join(path, 'SRunClient.py'), 'w', encoding='utf-8') as f:
         f.write("from srunpy.entry import Gui\n")
-        if args.default_key:
-            f.write("Gui()\n")
-        else:
-            f.write(f"Gui('{aes_key}')\n")
+        f.write("Gui()\n")
 
     # Compile / 编译
     from srunpy import WebRoot, __version__
@@ -424,11 +408,6 @@ def Build() -> None:
         return
     else:
         print('编译完成 Compile completed')
-        if not args.default_key:
-            print(
-                '建议删除SRunClient.py文件以保护密钥 '
-                'It is recommended to delete the SRunClient.py file to protect the key'
-            )
         print('请在以下路径查看可执行文件 Please check the executable file in the following path')
         print(os.path.abspath(exe_path))
         res = input('是否立即启动程序? Whether to start the program immediately? (Y/n)')

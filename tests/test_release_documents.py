@@ -59,5 +59,4 @@ def test_release_documents_point_to_the_maintained_fork() -> None:
     assert maintained_repository_url in source_code_text
     assert maintained_repository_url in project_metadata_text
     assert "api.github.com/repos/cjdem/SRunPy-GUI/releases/latest" in interface_text
-    assert f"{maintained_repository_url}/releases/latest" in interface_text
     assert f"AppPublisherURL={maintained_repository_url}" in installer_text

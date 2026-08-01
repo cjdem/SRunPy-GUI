@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Callable
 
 from srunpy.reconnect import ReconnectService
@@ -79,4 +80,52 @@ def test_stop_is_idempotent_when_service_was_not_started() -> None:
     service.stop()
     service.stop()
 
+    assert service.is_running is False
+
+
+def test_set_check_interval_updates_polling_interval_in_place() -> None:
+    service = ReconnectService(
+        lambda: {},
+        lambda _: True,
+        check_interval=5.0,
+        maximum_backoff=20.0,
+    )
+
+    service.set_check_interval(10.0)
+    assert service.check_interval == 10.0
+    assert service.maximum_backoff == 20.0
+
+    service.set_check_interval(50.0)
+    assert service.maximum_backoff == 50.0
+
+
+def test_start_clears_stop_event_while_worker_is_stopping() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_login(_: object) -> bool:
+        entered.set()
+        release.wait(timeout=5)
+        return True
+
+    client = FakeConnectionClient((True, False, {}))
+    service = ReconnectService(
+        lambda: {"wifi": client},
+        blocking_login,
+        check_interval=1.0,
+    )
+
+    service.start()
+    assert entered.wait(timeout=2)
+    entered.clear()
+
+    service.stop()
+    assert service.is_running
+
+    service.start()
+    release.set()
+    assert entered.wait(timeout=2)
+    release.set()
+
+    service.stop()
     assert service.is_running is False

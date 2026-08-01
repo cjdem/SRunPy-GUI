@@ -43,11 +43,24 @@ def test_local_html_and_css_references_resolve() -> None:
 def test_desktop_frontend_does_not_load_remote_resources() -> None:
     frontend_text = "\n".join(
         (WEB_ROOT / filename).read_text(encoding="utf-8")
-        for filename in ("index.html", "style.css", "script.js")
+        for filename in ("index.html", "style.css", "script.js", "utils.js")
     )
 
-    assert "http://" not in frontend_text
-    assert "https://" not in frontend_text
+    for pattern in (
+        'src="http',
+        'src="https',
+        "url(http",
+        "url(https",
+        "@import",
+        "fetch(",
+        "XMLHttpRequest",
+    ):
+        assert pattern not in frontend_text
+
+    external_urls = re.findall(r"https?://[^\s\"'<>]+", frontend_text)
+    assert set(external_urls) == {
+        "https://github.com/cjdem/SRunPy-GUI/releases/latest"
+    }
 
 
 def test_javascript_cached_elements_exist_in_html() -> None:
@@ -108,3 +121,22 @@ def test_settings_dialog_uses_permanent_dark_green_theme() -> None:
     assert "background: rgb(12 17 13 / 68%);" in css_text
     assert "background: rgb(41 54 46 / 92%);" in css_text
     assert ".settings-dialog .risk-critical" in css_text
+
+
+def test_exposed_backend_api_matches_javascript_usage() -> None:
+    project_root = Path(__file__).parents[1]
+    interface_text = (project_root / "srunpy" / "interface.py").read_text(
+        encoding="utf-8"
+    )
+    script_text = (WEB_ROOT / "script.js").read_text(encoding="utf-8")
+
+    expose_block = re.search(
+        r"self\.window\.expose\((.*?)\)",
+        interface_text,
+        flags=re.DOTALL,
+    )
+    assert expose_block is not None
+    exposed = set(re.findall(r"self\.srunpy\.(\w+)", expose_block.group(1)))
+    used = set(re.findall(r"backend\.(\w+)", script_text))
+
+    assert exposed == used

@@ -16,7 +16,7 @@ import time
 import uuid
 import webbrowser
 from binascii import a2b_hex, b2a_hex
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Final, List, Optional, Tuple
 
 import pystray
 import requests
@@ -27,15 +27,7 @@ import win32con
 import win32gui
 from Crypto.Cipher import AES
 from PIL import Image
-
-try:
-    from win10toast import ToastNotifier
-except ImportError:
-    class ToastNotifier:
-        """Compatibility fallback when the legacy toast package is unavailable."""
-
-        def show_toast(self, *_: object, **__: object) -> bool:
-            return False
+from winotify import Notification
 
 from srunpy import SrunClient, WebRoot, __version__
 from srunpy.account_metrics import normalize_account_metrics
@@ -90,16 +82,19 @@ def is_domain(address: str) -> Tuple[bool, str]:
     return False, ""
 
 
-# Global instances / 全局实例
-sysToaster = ToastNotifier()
 application_path = os.path.abspath(sys.argv[0])
 python_path = os.path.abspath(sys.executable)
 start_lnk_path = os.path.join(
     os.path.expandvars(r'%APPDATA%'),
     r'Microsoft\Windows\Start Menu\Programs\Startup',
+    '校园网登录器.lnk'
+)
+legacy_start_lnk_path = os.path.join(
+    os.path.expandvars(r'%APPDATA%'),
+    r'Microsoft\Windows\Start Menu\Programs\Startup',
     '校园网登陆器.lnk'
 )
-config_path = str(get_default_config_path())
+LEGACY_AES_KEY: Final[str] = "dj26Dh47useoUI28"
 
 
 def get_Color_Mode() -> int:
@@ -142,18 +137,15 @@ def get_Update() -> bool:
         return False
 
 
-def load_config(aes_key: str) -> Dict[str, Any]:
+def load_config() -> Dict[str, Any]:
     """
     Load configuration from file with AES decryption.
     使用 AES 解密从文件加载配置。
 
-    Args / 参数:
-        aes_key: AES encryption key / AES 加密密钥
-
     Returns / 返回:
         Configuration dictionary / 配置字典
     """
-    legacy_cipher = MyAES(key=aes_key)
+    legacy_cipher = MyAES(key=LEGACY_AES_KEY)
     store = ConfigStore(
         get_default_config_path(),
         WindowsDPAPICredentialProtector(),
@@ -165,25 +157,15 @@ def load_config(aes_key: str) -> Dict[str, Any]:
     return store.load()
 
 
-def reset_config() -> None:
-    """
-    Reset configuration by removing config file.
-    通过删除配置文件重置配置。
-    """
-    if os.path.exists(config_path):
-        os.remove(config_path)
-
-
-def save_config(config: Dict[str, Any], aes_key: str) -> None:
+def save_config(config: Dict[str, Any]) -> None:
     """
     Save configuration to file with AES encryption.
     使用 AES 加密将配置保存到文件。
 
     Args / 参数:
         config: Configuration dictionary / 配置字典
-        aes_key: AES encryption key / AES 加密密钥
     """
-    legacy_cipher = MyAES(key=aes_key)
+    legacy_cipher = MyAES(key=LEGACY_AES_KEY)
     store = ConfigStore(
         get_default_config_path(),
         WindowsDPAPICredentialProtector(),
@@ -203,47 +185,17 @@ def check_lnk() -> bool:
     Returns / 返回:
         True if exists / 如果存在返回 True
     """
-    return os.path.exists(start_lnk_path)
+    return os.path.exists(start_lnk_path) or os.path.exists(legacy_start_lnk_path)
 
 
 def delete_lnk() -> None:
     """
-    Delete startup link if it exists.
-    如果存在则删除启动链接。
+    Delete current and legacy startup links if they exist.
+    如果存在则删除当前及旧版启动链接。
     """
-    if check_lnk():
-        os.remove(start_lnk_path)
-
-
-def create_desktop_lnk(qt_backend: bool = False) -> None:
-    """
-    Create desktop shortcut.
-    创建桌面快捷方式。
-
-    Args / 参数:
-        qt_backend: Whether using Qt backend / 是否使用 Qt 后端
-    """
-    no_cmd_path = os.path.join(
-        os.path.dirname(application_path), 'srunpy-gui.exe'
-    )
-    if (python_path != application_path and os.path.exists(python_path) and
-            os.path.basename(application_path).endswith(".exe") and
-            os.path.exists(no_cmd_path)):
-        desktop_lnk = os.path.join(
-            os.path.expandvars(r'%USERPROFILE%'),
-            'Desktop', '校园网登陆器.lnk'
-        )
-        if os.path.exists(desktop_lnk):
-            os.remove(desktop_lnk)
-        shell = client.Dispatch('Wscript.Shell')
-        link = shell.CreateShortCut(desktop_lnk)
-        link.TargetPath = no_cmd_path
-        if qt_backend:
-            link.Arguments += ' --qt'
-        link.IconLocation = os.path.join(WebRoot, 'icons/logo.ico') + ',0'
-        link.save()
-    else:
-        print("非EntryPoint启动，无法创建桌面快捷方式")
+    for shortcut_path in (start_lnk_path, legacy_start_lnk_path):
+        if os.path.exists(shortcut_path):
+            os.remove(shortcut_path)
 
 
 def create_lnk(qt_backend: bool = False) -> None:
@@ -286,6 +238,8 @@ class MyAES:
     """
     AES encryption/decryption utility.
     AES 加密/解密工具。
+
+    仅用于解密旧版本使用固定密钥写入的配置文件；新配置使用 DPAPI 保护。
     """
 
     def __init__(self, key: str) -> None:
@@ -358,7 +312,7 @@ class TaskbarIcon:
         self.should_exit = False
         self.menu = pystray.Menu(
             pystray.MenuItem("打开主界面", self.stop, default=True),
-            pystray.MenuItem("退出登陆器", self.exit)
+            pystray.MenuItem("退出登录器", self.exit)
         )
         try:
             if get_Color_Mode() == 0:
@@ -370,7 +324,7 @@ class TaskbarIcon:
         self.icon = pystray.Icon(
             "SRunPy",
             Image.open(os.path.join(WebRoot, icon_path)),
-            "校园网登陆器",
+            "校园网登录器",
             self.menu
         )
         self.icon.run()
@@ -391,15 +345,13 @@ class GUIBackend:
     GUI 应用程序的后端逻辑。
     """
 
-    def __init__(self, use_qt: bool = False,
-                 aes_key: str = "dj26Dh47useoUI28") -> None:
+    def __init__(self, use_qt: bool = False) -> None:
         """
         Initialize GUI backend.
         初始化 GUI 后端。
 
         Args / 参数:
             use_qt: Whether to use Qt backend for webview / 是否使用 Qt 后端
-            aes_key: AES encryption key for config / 配置的 AES 加密密钥
         """
         if use_qt:
             try:
@@ -409,14 +361,13 @@ class GUIBackend:
                 print("Failed to import Qt library, please use pip install srumpy[qt] to install")
                 use_qt = False
 
-        self.aes_key = aes_key
         self.qt_backend = use_qt
         self.reconnect_service: Optional[ReconnectService] = None
         self.traffic_monitor: Optional[TrafficMonitorService] = None
         self.srun_clients: Dict[Optional[str], SrunClient] = {}
         self.active_ip: Optional[str] = None
         self.isUptoDate = False
-        self.hasDoneUpdate = False
+        self._backend_lock = threading.RLock()
 
         def check_update():
             self.isUptoDate = get_Update()
@@ -429,12 +380,14 @@ class GUIBackend:
         self.refresh_config()
 
     def refresh_config(self) -> None:
-        """
-        Reload configuration from file.
-        从文件重新加载配置。
-        """
+        """Reload configuration and rebuild background services; serialized."""
+        with self._backend_lock:
+            self._refresh_config_inner()
+
+    def _refresh_config_inner(self) -> None:
+        """Apply configuration state without concurrent client rebuilds."""
         try:
-            self.config = load_config(self.aes_key)
+            self.config = load_config()
             self.username = self.config['username']
             self.password = self.config['password']
             self.pass_correct = self.config['pass_correct']
@@ -461,25 +414,29 @@ class GUIBackend:
         self._ensure_active_ip()
         self.srun = self.get_client()
 
-        if self.start_with_windows:
-            create_lnk(qt_backend=self.qt_backend)
-        else:
-            delete_lnk()
+        try:
+            if self.start_with_windows:
+                create_lnk(qt_backend=self.qt_backend)
+            else:
+                delete_lnk()
+        except Exception as error:
+            print(f"同步开机启动快捷方式失败: {error}")
 
         self._sync_reconnect_service()
         self._sync_traffic_monitor()
 
     def shutdown(self) -> None:
         """Stop background work and close all pooled network connections."""
-        if self.traffic_monitor is not None:
-            self.traffic_monitor.stop()
-        if self.reconnect_service is not None:
-            self.reconnect_service.stop()
-        for srun_client in self.srun_clients.values():
-            try:
-                srun_client.close()
-            except Exception:
-                pass
+        with self._backend_lock:
+            if self.traffic_monitor is not None:
+                self.traffic_monitor.stop()
+            if self.reconnect_service is not None:
+                self.reconnect_service.stop()
+            for srun_client in self.srun_clients.values():
+                try:
+                    srun_client.close()
+                except Exception:
+                    pass
 
     def _sync_traffic_monitor(self) -> None:
         """Apply traffic preferences without coupling sampling to gateway polling."""
@@ -521,19 +478,15 @@ class GUIBackend:
 
     def _sync_reconnect_service(self) -> None:
         """Start or stop automatic reconnection to match current configuration."""
-        service_needs_rebuild = (
-            self.reconnect_service is None
-            or self.reconnect_service.check_interval != max(1.0, float(self.sleeptime))
-        )
-        if service_needs_rebuild:
-            if self.reconnect_service is not None:
-                self.reconnect_service.stop()
+        if self.reconnect_service is None:
             self.reconnect_service = ReconnectService(
                 clients_provider=lambda: dict(self.srun_clients),
                 login_callback=self.login,
                 check_interval=float(self.sleeptime),
                 notification_callback=self._notify_reconnect_result,
             )
+        else:
+            self.reconnect_service.set_check_interval(float(self.sleeptime))
 
         if self.auto_login:
             self.reconnect_service.start()
@@ -554,12 +507,26 @@ class GUIBackend:
             message = interface_label + "自动登录失败，请检查账号或网络"
         else:
             return
-        sysToaster.show_toast(
-            "校园网登录器",
-            message,
-            duration=5,
-            threaded=True,
-        )
+
+        def show_notification() -> None:
+            try:
+                notification = Notification(
+                    app_id="SRunPy",
+                    title="校园网登录器",
+                    msg=message,
+                    duration="short",
+                    icon=os.path.join(WebRoot, "icons", "logo.ico"),
+                )
+                notification.show()
+            except Exception:
+                # A notification failure must never break the reconnect worker.
+                pass
+
+        threading.Thread(
+            target=show_notification,
+            name="SRunPy-Notification",
+            daemon=True,
+        ).start()
 
     def _create_client(self, client_ip: Optional[str]) -> SrunClient:
         """
@@ -630,7 +597,7 @@ class GUIBackend:
         if self.active_ip not in self.srun_clients:
             self.active_ip = next(iter(self.srun_clients.keys()))
             self.config['active_ip'] = self.active_ip
-            save_config(self.config, self.aes_key)
+            save_config(self.config)
 
     def get_client(self, ip: Optional[str] = None) -> Optional[SrunClient]:
         """
@@ -775,6 +742,7 @@ class GUIBackend:
 
         for ip in candidates:
             token = None if ip is None else ip
+            client = None
             try:
                 client = SrunClient(
                     resolved_host if resolved_host != "" else resolved_ip,
@@ -807,6 +775,12 @@ class GUIBackend:
             except Exception as exc:
                 reachable = False
                 message = f"不可访问：{exc}"
+            finally:
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
 
             if isinstance(message, str) and len(message) > 120:
                 message = message[:117] + "..."
@@ -837,19 +811,20 @@ class GUIBackend:
             username: New username / 新用户名
             password: New password / 新密码
         """
-        if username != "" and username != self.config['username']:
-            if self.srun_host == "gw.buaa.edu.cn":
-                self.config['username'] = username.lower()
-            else:
-                self.config['username'] = username
-            self.config['pass_correct'] = False
-            self.config['auto_login'] = False
-        if password != "" and password != self.config['password']:
-            self.config['password'] = password
-            self.config['pass_correct'] = False
-            self.config['auto_login'] = False
-        save_config(self.config, self.aes_key)
-        self.refresh_config()
+        with self._backend_lock:
+            if username != "" and username != self.config['username']:
+                if self.srun_host == "gw.buaa.edu.cn":
+                    self.config['username'] = username.lower()
+                else:
+                    self.config['username'] = username
+                self.config['pass_correct'] = False
+                self.config['auto_login'] = False
+            if password != "" and password != self.config['password']:
+                self.config['password'] = password
+                self.config['pass_correct'] = False
+                self.config['auto_login'] = False
+            save_config(self.config)
+            self.refresh_config()
 
     def set_start_with_windows(self, start_with_windows: bool) -> None:
         """
@@ -859,9 +834,14 @@ class GUIBackend:
         Args / 参数:
             start_with_windows: Enable/disable startup / 启用/禁用启动
         """
-        self.config['start_with_windows'] = start_with_windows
-        save_config(self.config, self.aes_key)
-        self.refresh_config()
+        with self._backend_lock:
+            if start_with_windows:
+                create_lnk(qt_backend=self.qt_backend)
+            else:
+                delete_lnk()
+            self.config['start_with_windows'] = start_with_windows
+            save_config(self.config)
+            self.refresh_config()
 
     def set_auto_login(self, auto_login: bool) -> bool:
         """
@@ -874,13 +854,14 @@ class GUIBackend:
         Returns / 返回:
             True if successful / 成功返回 True
         """
-        if auto_login and not self.auto_login and not self.pass_correct:
-            return False
-        else:
-            self.config['auto_login'] = auto_login
-            save_config(self.config, self.aes_key)
-            self.refresh_config()
-            return True
+        with self._backend_lock:
+            if auto_login and not self.auto_login and not self.pass_correct:
+                return False
+            else:
+                self.config['auto_login'] = auto_login
+                save_config(self.config)
+                self.refresh_config()
+                return True
 
     def set_active_client_ip(self, ip: Optional[str]) -> bool:
         """
@@ -893,37 +874,17 @@ class GUIBackend:
         Returns / 返回:
             True if successful / 成功返回 True
         """
-        target = ip if ip not in (None, "", "null") else None
-        if target not in self.srun_clients:
-            return False
-        self.active_ip = target
-        self.config['active_ip'] = target
-        save_config(self.config, self.aes_key)
-        self.srun = self.get_client()
-        if self.traffic_monitor is not None:
-            self.traffic_monitor.update_selection(self.active_ip, self.host_ip)
-        return True
-
-    def get_config(self) -> Tuple:
-        """
-        Get current configuration.
-        获取当前配置。
-
-        Returns / 返回:
-            Configuration tuple / 配置元组
-        """
-        return (
-            self.username,
-            self.password != "",
-            self.auto_login,
-            self.start_with_windows,
-            self.isUptoDate,
-            self.hasDoneUpdate,
-            self.srun_host if self.srun_host != "" else self.host_ip,
-            self.self_service,
-            self.active_ip,
-            self.local_ips,
-        )
+        with self._backend_lock:
+            target = ip if ip not in (None, "", "null") else None
+            if target not in self.srun_clients:
+                return False
+            self.active_ip = target
+            self.config['active_ip'] = target
+            save_config(self.config)
+            self.srun = self.get_client()
+            if self.traffic_monitor is not None:
+                self.traffic_monitor.update_selection(self.active_ip, self.host_ip)
+            return True
 
     def get_app_state(self) -> Dict[str, Any]:
         """Return named UI state without exposing the stored plaintext password."""
@@ -950,31 +911,26 @@ class GUIBackend:
 
     def get_connection_status(self, ip: Optional[str] = None) -> Dict[str, Any]:
         """Return a structured connection state and safe diagnostic message."""
-        client = self.get_client(ip)
-        if client is None:
+        with self._backend_lock:
+            client = self.get_client(ip)
+            if client is None:
+                return {
+                    "available": False,
+                    "online": False,
+                    "data": {},
+                    "error_code": "interface_unavailable",
+                    "message": "所选网络接口不可用",
+                }
+
+            is_available, is_online, data = client.is_connected()
+            last_error = getattr(client, "last_error", None)
             return {
-                "available": False,
-                "online": False,
-                "data": {},
-                "error_code": "interface_unavailable",
-                "message": "所选网络接口不可用",
+                "available": is_available,
+                "online": is_online,
+                "data": normalize_account_metrics(data, is_online=is_online).to_dict(),
+                "error_code": getattr(last_error, "code", None),
+                "message": getattr(last_error, "message", None),
             }
-
-        is_available, is_online, data = client.is_connected()
-        last_error = getattr(client, "last_error", None)
-        return {
-            "available": is_available,
-            "online": is_online,
-            "data": normalize_account_metrics(data, is_online=is_online).to_dict(),
-            "error_code": getattr(last_error, "code", None),
-            "message": getattr(last_error, "message", None),
-        }
-
-    def get_traffic_capabilities(self) -> Dict[str, Any]:
-        """Return the fixed traffic feature contract exposed to the dashboard."""
-        if self.traffic_monitor is None:
-            return {"supported": False, "ranges": []}
-        return self.traffic_monitor.get_capabilities()
 
     def get_traffic_snapshot(self) -> Dict[str, Any]:
         """Read the in-memory sample without contacting the SRun gateway."""
@@ -1001,23 +957,30 @@ class GUIBackend:
 
     def update_traffic_preferences(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and persist only traffic-monitor preferences."""
-        try:
-            sample_interval = float(settings.get("sample_interval", self.traffic_sample_interval))
-            retention_days = int(settings.get("retention_days", self.traffic_retention_days))
-        except (TypeError, ValueError):
-            return {"ok": False, "message": "采样间隔或保留天数无效"}
-        if not 0.5 <= sample_interval <= 5.0:
-            return {"ok": False, "message": "采样间隔必须在 0.5 到 5 秒之间"}
-        if not 1 <= retention_days <= 30:
-            return {"ok": False, "message": "历史保留天数必须在 1 到 30 天之间"}
+        with self._backend_lock:
+            try:
+                sample_interval = float(
+                    settings.get("sample_interval", self.traffic_sample_interval)
+                )
+                retention_days = int(
+                    settings.get("retention_days", self.traffic_retention_days)
+                )
+            except (TypeError, ValueError):
+                return {"ok": False, "message": "采样间隔或保留天数无效"}
+            if not 0.5 <= sample_interval <= 5.0:
+                return {"ok": False, "message": "采样间隔必须在 0.5 到 5 秒之间"}
+            if not 1 <= retention_days <= 30:
+                return {"ok": False, "message": "历史保留天数必须在 1 到 30 天之间"}
 
-        self.config["traffic_sampling_enabled"] = bool(settings.get("enabled", True))
-        self.config["traffic_sample_interval"] = sample_interval
-        self.config["traffic_history_enabled"] = bool(settings.get("history_enabled", True))
-        self.config["traffic_retention_days"] = retention_days
-        save_config(self.config, self.aes_key)
-        self.refresh_config()
-        return {"ok": True, "message": "流量监控设置已保存"}
+            self.config["traffic_sampling_enabled"] = bool(settings.get("enabled", True))
+            self.config["traffic_sample_interval"] = sample_interval
+            self.config["traffic_history_enabled"] = bool(
+                settings.get("history_enabled", True)
+            )
+            self.config["traffic_retention_days"] = retention_days
+            save_config(self.config)
+            self.refresh_config()
+            return {"ok": True, "message": "流量监控设置已保存"}
 
     def clear_traffic_history(self) -> Dict[str, Any]:
         """Delete persisted and in-memory traffic history."""
@@ -1033,124 +996,79 @@ class GUIBackend:
         ip: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Save changed credentials and execute login as one UI operation."""
-        if not username.strip():
-            return {"ok": False, "message": "请输入用户名"}
-        if not password and not self.password:
-            return {"ok": False, "message": "请输入密码"}
+        with self._backend_lock:
+            if not username.strip():
+                return {"ok": False, "message": "请输入用户名"}
+            if not password and not self.password:
+                return {"ok": False, "message": "请输入密码"}
 
-        self.set_config(username.strip(), password)
-        client = self.get_client(ip)
-        if client is None:
-            return {"ok": False, "message": "所选网络接口不可用"}
-        try:
-            login_succeeded = client.login(self.username, self.password)
-        except Exception as error:
-            return {"ok": False, "message": str(error)}
+            self.set_config(username.strip(), password)
+            client = self.get_client(ip)
+            if client is None:
+                return {"ok": False, "message": "所选网络接口不可用"}
+            try:
+                login_succeeded = client.login(self.username, self.password)
+            except Exception as error:
+                return {"ok": False, "message": str(error)}
 
-        if not login_succeeded:
-            last_error = getattr(client, "last_error", None)
-            return {
-                "ok": False,
-                "message": getattr(last_error, "message", "登录失败，请检查账号和网络"),
-            }
+            if not login_succeeded:
+                last_error = getattr(client, "last_error", None)
+                return {
+                    "ok": False,
+                    "message": getattr(last_error, "message", "登录失败，请检查账号和网络"),
+                }
 
-        if not self.pass_correct:
-            self.config["pass_correct"] = True
-            save_config(self.config, self.aes_key)
-            self.refresh_config()
-        return {"ok": True, "message": "登录成功"}
+            if not self.pass_correct:
+                self.config["pass_correct"] = True
+                save_config(self.config)
+                self.refresh_config()
+            return {"ok": True, "message": "登录成功"}
 
     def perform_logout(self, ip: Optional[str] = None) -> Dict[str, Any]:
         """Execute logout and preserve a user-readable failure reason."""
-        client = self.get_client(ip)
-        if client is None:
-            return {"ok": False, "message": "所选网络接口不可用"}
-        try:
-            logout_succeeded = client.logout()
-        except Exception as error:
-            return {"ok": False, "message": str(error)}
-        return {
-            "ok": logout_succeeded,
-            "message": "已注销" if logout_succeeded else "注销失败，请稍后重试",
-        }
+        with self._backend_lock:
+            client = self.get_client(ip)
+            if client is None:
+                return {"ok": False, "message": "所选网络接口不可用"}
+            try:
+                logout_succeeded = client.logout()
+            except Exception as error:
+                return {"ok": False, "message": str(error)}
+            return {
+                "ok": logout_succeeded,
+                "message": "已注销" if logout_succeeded else "注销失败，请稍后重试",
+            }
 
     def update_preferences(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and atomically apply desktop settings from the new UI."""
-        gateway = str(settings.get("gateway", "")).strip()
-        self_service = str(settings.get("self_service", "")).strip()
-        if not self._update_gateway_only(gateway, self_service):
-            return {"ok": False, "message": "无法解析网关地址，请检查输入"}
+        with self._backend_lock:
+            gateway = str(settings.get("gateway", "")).strip()
+            self_service = str(settings.get("self_service", "")).strip()
+            if not self._update_gateway_only(gateway, self_service):
+                return {"ok": False, "message": "无法解析网关地址，请检查输入"}
 
-        try:
-            reconnect_interval = int(settings.get("reconnect_interval", self.sleeptime))
-        except (TypeError, ValueError):
-            return {"ok": False, "message": "重连间隔必须是整数"}
-        if not 3 <= reconnect_interval <= 300:
-            return {"ok": False, "message": "重连间隔必须在 3 到 300 秒之间"}
+            try:
+                reconnect_interval = int(
+                    settings.get("reconnect_interval", self.sleeptime)
+                )
+            except (TypeError, ValueError):
+                return {"ok": False, "message": "重连间隔必须是整数"}
+            if not 3 <= reconnect_interval <= 300:
+                return {"ok": False, "message": "重连间隔必须在 3 到 300 秒之间"}
 
-        selected_ips = settings.get("selected_ips")
-        active_ip = settings.get("active_ip")
-        self._update_local_ip_selection(selected_ips, active_ip)
-        self.config["sleeptime"] = reconnect_interval
-        self.config["allow_unverified_tls"] = bool(settings.get("allow_unverified_tls"))
-        self.config["allow_insecure_http"] = bool(settings.get("allow_insecure_http"))
-        save_config(self.config, self.aes_key)
-        self.refresh_config()
-        return {"ok": True, "message": "设置已保存"}
-
-    def get_ip_settings(self) -> Dict[str, Any]:
-        """
-        Get IP settings.
-        获取 IP 设置。
-
-        Returns / 返回:
-            IP settings dictionary / IP 设置字典
-        """
-        return {
-            "available": get_local_ipv4_addresses(),
-            "selected": self.local_ips,
-            "active": self.active_ip,
-            "gateway": self.srun_host if self.srun_host != "" else self.host_ip,
-            "self_service": self.self_service,
-        }
-
-    def update_ip_settings(self, settings: Dict[str, Any]) -> bool:
-        """
-        Update IP settings.
-        更新 IP 设置。
-
-        Args / 参数:
-            settings: Settings dictionary / 设置字典
-
-        Returns / 返回:
-            True if successful / 成功返回 True
-        """
-        gateway = settings.get(
-            'gateway',
-            self.srun_host if self.srun_host != "" else self.host_ip
-        )
-        self_service = settings.get('self_service', self.self_service)
-        selected = settings.get('selected')
-        active = settings.get('active')
-        return self.set_srun_host(gateway, self_service, selected, active)
-
-
-    def do_update(self, start: bool = False) -> bool:
-        """
-        Perform software update.
-        执行软件更新。
-
-        Args / 参数:
-            start: Whether to restart after update / 是否在更新后重启
-
-        Returns / 返回:
-            True if successful / 成功返回 True
-        """
-        if start:
-            webbrowser.open("https://github.com/cjdem/SRunPy-GUI/releases/latest")
-            return True
-        self.hasDoneUpdate = True
-        return True
+            selected_ips = settings.get("selected_ips")
+            active_ip = settings.get("active_ip")
+            self._update_local_ip_selection(selected_ips, active_ip)
+            self.config["sleeptime"] = reconnect_interval
+            self.config["allow_unverified_tls"] = bool(
+                settings.get("allow_unverified_tls")
+            )
+            self.config["allow_insecure_http"] = bool(
+                settings.get("allow_insecure_http")
+            )
+            save_config(self.config)
+            self.refresh_config()
+            return {"ok": True, "message": "设置已保存"}
 
     def start_self_service(self, ip: Optional[str] = None) -> None:
         """
@@ -1160,53 +1078,35 @@ class GUIBackend:
         Args / 参数:
             ip: Client IP (None for default) / 客户端 IP（None 表示默认）
         """
-        client = self.get_client(ip)
-        configured_service = self.self_service.strip().rstrip("/")
-        if configured_service.startswith(("http://", "https://")):
-            self_service_url = configured_service
-        else:
-            self_service_url = f"https://{configured_service}"
-        if client is None:
-            webbrowser.open(self_service_url)
-            return
-
-        is_available, is_online, data = client.is_connected()
-        if is_online:
-            if "user_name" in data:
-                username = data["user_name"]
+        with self._backend_lock:
+            client = self.get_client(ip)
+            configured_service = self.self_service.strip().rstrip("/")
+            if configured_service.startswith(("http://", "https://")):
+                self_service_url = configured_service
             else:
-                username = self.username
-            data_str = base64.standard_b64encode(
-                f"zh-CN:{username}".encode()
-            ).decode()
-            webbrowser.open(
-                f"{self_service_url}/site/sso?data={data_str}"
-            )
-        else:
-            webbrowser.open(self_service_url)
+                self_service_url = f"https://{configured_service}"
+            if client is None:
+                webbrowser.open(self_service_url)
+                return
 
-    def set_srun_host(self, srun_host: str, self_service: str,
-                      selected_ips: Optional[List[Optional[str]]] = None,
-                      active_ip: Optional[str] = None) -> bool:
-        """
-        Set gateway host and update configuration.
-        设置网关主机并更新配置。
+            is_available, is_online, data = client.is_connected()
+            if is_online:
+                if "user_name" in data:
+                    username = data["user_name"]
+                else:
+                    username = self.username
+                data_str = base64.standard_b64encode(
+                    f"zh-CN:{username}".encode()
+                ).decode()
+                webbrowser.open(
+                    f"{self_service_url}/site/sso?data={data_str}"
+                )
+            else:
+                webbrowser.open(self_service_url)
 
-        Args / 参数:
-            srun_host: Gateway host / 网关主机
-            self_service: Self-service URL / 自助服务 URL
-            selected_ips: List of selected IPs / 选定的 IP 列表
-            active_ip: Active IP / 活动 IP
-
-        Returns / 返回:
-            True if successful / 成功返回 True
-        """
-        if not self._update_gateway_only(srun_host, self_service):
-            return False
-        self._update_local_ip_selection(selected_ips, active_ip)
-        save_config(self.config, self.aes_key)
-        self.refresh_config()
-        return True
+    def open_releases_page(self) -> None:
+        """Open the maintained repository's release page in the default browser."""
+        webbrowser.open("https://github.com/cjdem/SRunPy-GUI/releases/latest")
 
     def login(self, ip: Optional[str] = None) -> bool:
         """
@@ -1219,80 +1119,20 @@ class GUIBackend:
         Returns / 返回:
             True if successful / 成功返回 True
         """
-        client = self.get_client(ip)
-        if client is None:
-            return False
-        try:
-            success = client.login(self.username, self.password)
-        except Exception:
-            success = False
+        with self._backend_lock:
+            client = self.get_client(ip)
+            if client is None:
+                return False
+            try:
+                success = client.login(self.username, self.password)
+            except Exception:
+                success = False
 
-        if success and not self.pass_correct:
-            self.config['pass_correct'] = True
-            save_config(self.config, self.aes_key)
-            self.refresh_config()
-        return success
-
-    def logout(self, ip: Optional[str] = None) -> str:
-        """
-        Logout from gateway.
-        从网关注销。
-
-        Args / 参数:
-            ip: Client IP (None for default) / 客户端 IP（None 表示默认）
-
-        Returns / 返回:
-            True if successful / 成功返回 True
-        """
-        client = self.get_client(ip)
-        if client is None:
-            return False
-        try:
-            if client.logout():
-                return "success"
-                # for _ in range(20):
-                #     _, is_online, _ = client.is_connected()
-                #     if not is_online:
-                #         return "success"
-                #     time.sleep(0.25)
-                # return "timeout"
-            else:
-                return "failed"
-        except Exception as e:
-            return str(e)
-
-    def get_online_data(self, ip: Optional[str] = None,
-                        hope: Optional[bool] = None) -> Tuple[bool, bool, Dict]:
-        """
-        Get online status and data.
-        获取在线状态和数据。
-
-        Args / 参数:
-            ip: Client IP (None for default) / 客户端 IP（None 表示默认）
-            hope: Expected online status / 期望的在线状态
-
-        Returns / 返回:
-            Tuple of (is_available, is_online, data) /
-            (是否可用, 是否在线, 数据) 的元组
-        """
-        client = self.get_client(ip)
-        if client is None:
-            return False, False, {}
-        try:
-            is_available = False
-            is_online = False
-            data = {}
-            if hope is not None:
-                time.sleep(0.25)
-            for _ in range(5):
-                is_available, is_online, data = client.is_connected()
-                if hope is None or is_online == hope:
-                    break
-                time.sleep(0.6)
-            return is_available, is_online, data
-        except Exception:
-            return False, False, {}
-
+            if success and not self.pass_correct:
+                self.config['pass_correct'] = True
+                save_config(self.config)
+                self.refresh_config()
+            return success
 
 class MainWindow:
     """
@@ -1338,74 +1178,12 @@ class MainWindow:
             resizable=True,
             frameless=False,
         )
-        
-        self.hwnd = None
-
-        def _animate_and_action(action: str) -> None:
-            """
-            Animate the frameless window using AnimateWindow if hwnd is available,
-            then perform the requested action ('close' or 'minimize').
-            """
-            hwnd = getattr(self, 'hwnd', None)
-            # Fallback to original behavior if no hwnd
-            if not hwnd:
-                if action == 'close':
-                    try:
-                        self.window.destroy()
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        self.window.minimize()
-                    except Exception:
-                        pass
-                return
-
-            try:
-                # AnimateWindow flags
-                AW_HIDE = 0x00010000
-                AW_CENTER = 0x00000010
-                AW_BLEND = 0x00080000
-
-                
-
-                animate = getattr(ctypes.windll.user32, "AnimateWindow", None)
-                if animate is not None:
-                    if action == 'close':
-                        flags = AW_HIDE | AW_CENTER | AW_BLEND
-                        # Slide down when closing (works well for frameless)
-                        animate(hwnd, 300, flags)  # AW_VER_POSITIVE   
-                    else:
-                        # Use a short fade-out/slide when hiding (works well for frameless)
-                        flags = AW_HIDE | AW_BLEND
-                        # 200 ms feels natural (Windows typical animation length)
-                        animate(hwnd, 200, flags)
-            except Exception:
-                # If animation fails, ignore and continue to the action
-                pass
-
-            # Perform the actual action
-            try:
-                if action == 'close':
-                    self.window.destroy()
-                else:
-                    self.window.minimize()
-            except Exception:
-                pass    
-
-        def close_window() -> None:
-            _animate_and_action('close')
-
-        def minimize_window() -> None:
-            _animate_and_action('minimize')
 
         # Expose backend methods to JavaScript
         # 向 JavaScript 暴露后端方法
         self.window.expose(
-            self.srunpy.get_online_data,
             self.srunpy.get_app_state,
             self.srunpy.get_connection_status,
-            self.srunpy.get_traffic_capabilities,
             self.srunpy.get_traffic_snapshot,
             self.srunpy.get_traffic_history,
             self.srunpy.update_traffic_preferences,
@@ -1413,21 +1191,12 @@ class MainWindow:
             self.srunpy.perform_login,
             self.srunpy.perform_logout,
             self.srunpy.update_preferences,
-            self.srunpy.login,
-            self.srunpy.logout,
-            self.srunpy.set_config,
-            self.srunpy.get_config,
             self.srunpy.set_start_with_windows,
             self.srunpy.set_auto_login,
-            self.srunpy.do_update,
             self.srunpy.start_self_service,
-            self.srunpy.set_srun_host,
-            self.srunpy.get_ip_settings,
-            self.srunpy.update_ip_settings,
+            self.srunpy.open_releases_page,
             self.srunpy.probe_gateway_ips,
             self.srunpy.set_active_client_ip,
-            close_window,
-            minimize_window
         )
 
         def after_window_created() -> None:
@@ -1453,10 +1222,9 @@ class MainWindow:
                     if hwnd:
                         break
                     time.sleep(0.05)
-                self.window.set_title("校园网登陆器")
+                self.window.set_title("校园网登录器")
 
                 if hwnd:
-                    self.hwnd = hwnd
                     try:
                         icon_file = os.path.join(WebRoot, 'icons', 'logo.ico')
                         if os.path.exists(icon_file):

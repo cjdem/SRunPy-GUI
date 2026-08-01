@@ -1,4 +1,6 @@
 import socket
+import threading
+import time
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -156,6 +158,48 @@ def test_history_retention_range_limit_and_clear(tmp_path: Path) -> None:
     assert all(point["download_bytes_per_second"] == 10.0 for point in history)
     store.clear()
     assert store.get_history("7d", current_time=current_time) == []
+
+
+def test_stop_does_not_restart_worker_while_sample_is_blocked(tmp_path: Path) -> None:
+    class BlockingProvider:
+        def __init__(self) -> None:
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def sample(
+            self,
+            preferred_ip: Optional[str],
+            gateway_ip: str,
+        ) -> Optional[TrafficCounterSample]:
+            self.entered.set()
+            self.release.wait(timeout=5)
+            return None
+
+    provider = BlockingProvider()
+    monitor = TrafficMonitorService(
+        provider,
+        TrafficHistoryStore(tmp_path / "traffic.db"),
+        preferred_ip="10.0.0.2",
+        gateway_ip="10.0.0.1",
+    )
+
+    monitor.start()
+    assert provider.entered.wait(timeout=2)
+    worker_before_stop = monitor._thread
+
+    monitor.stop()
+    assert monitor.is_running
+
+    monitor.start()
+    assert monitor._thread is worker_before_stop
+
+    provider.release.set()
+    deadline = time.monotonic() + 3
+    while monitor.is_running and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+    monitor.stop()
+    assert monitor.is_running is False
 
 
 @pytest.mark.parametrize(

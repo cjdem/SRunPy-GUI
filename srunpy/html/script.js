@@ -1,11 +1,19 @@
 "use strict";
 
-const AUTO_INTERFACE_TOKEN = "__auto__";
+const {
+  AUTO_INTERFACE_TOKEN,
+  formatTraffic,
+  formatRate,
+  formatDuration,
+  interfaceFromToken,
+} = window.SRunPyUtils;
 
 const applicationState = {
   config: null,
   connection: null,
   busy: false,
+  connectionPollTimerId: null,
+  connectionPollInFlight: false,
   probeResults: [],
   traffic: {
     snapshot: null,
@@ -24,11 +32,13 @@ function cacheElements() {
     "live-badge",
     "live-badge-text",
     "refresh-button",
+    "update-banner",
     "settings-button",
     "status-panel",
     "status-title",
     "status-message",
     "last-updated-label",
+    "retry-connection-button",
     "interface-select",
     "account-title",
     "credential-badge",
@@ -102,10 +112,6 @@ function activeInterfaceValue() {
     : String(activeIp);
 }
 
-function interfaceFromToken(interfaceToken) {
-  return interfaceToken === AUTO_INTERFACE_TOKEN ? null : interfaceToken;
-}
-
 function setMessage(element, message, state = "") {
   element.textContent = message || "";
   if (state) {
@@ -120,56 +126,10 @@ function setBusy(isBusy, message = "") {
   elements["primary-action"].disabled = isBusy;
   elements["refresh-button"].disabled = isBusy;
   elements["interface-select"].disabled = isBusy;
+  elements["retry-connection-button"].disabled = isBusy;
   if (message) {
     setMessage(elements["form-message"], message);
   }
-}
-
-function formatTraffic(rawBytes) {
-  if (rawBytes === null || typeof rawBytes === "undefined" || rawBytes === "") {
-    return "--";
-  }
-  const byteCount = Number(rawBytes);
-  if (!Number.isFinite(byteCount) || byteCount < 0) {
-    return "--";
-  }
-  if (byteCount >= 1024 ** 3) {
-    return `${(byteCount / 1024 ** 3).toFixed(2)} GB`;
-  }
-  return `${(byteCount / 1024 ** 2).toFixed(2)} MB`;
-}
-
-function formatRate(rawBytesPerSecond) {
-  if (
-    rawBytesPerSecond === null ||
-    typeof rawBytesPerSecond === "undefined" ||
-    rawBytesPerSecond === ""
-  ) {
-    return "--";
-  }
-  const rate = Number(rawBytesPerSecond);
-  if (!Number.isFinite(rate) || rate < 0) {
-    return "--";
-  }
-  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
-  let scaledRate = rate;
-  let unitIndex = 0;
-  while (scaledRate >= 1024 && unitIndex < units.length - 1) {
-    scaledRate /= 1024;
-    unitIndex += 1;
-  }
-  const decimalPlaces = scaledRate >= 100 || unitIndex === 0 ? 0 : scaledRate >= 10 ? 1 : 2;
-  return `${scaledRate.toFixed(decimalPlaces)} ${units[unitIndex]}`;
-}
-
-function formatDuration(rawSeconds) {
-  const totalSeconds = Math.max(0, Number(rawSeconds) || 0);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-  return hours > 0
-    ? `${hours}时 ${String(minutes).padStart(2, "0")}分`
-    : `${minutes}分 ${String(seconds).padStart(2, "0")}秒`;
 }
 
 function renderInterfaceSelector() {
@@ -203,6 +163,7 @@ function renderConfig() {
   elements["credential-badge"].dataset.active = String(Boolean(config.has_password));
   elements["auto-login-toggle"].checked = Boolean(config.auto_login);
   elements["auto-start-toggle"].checked = Boolean(config.start_with_windows);
+  elements["update-banner"].hidden = !config.update_available;
   elements["gateway-label"].textContent = `网关：${config.gateway}`;
   if (config.allow_insecure_http) {
     elements["security-mode-label"].textContent = "已启用明文 HTTP 兼容模式";
@@ -260,6 +221,7 @@ function renderConnection() {
   }
 
   const isOnline = Boolean(connection && connection.online);
+  elements["retry-connection-button"].hidden = !connection || isOnline;
   elements["account-title"].textContent = isOnline ? "当前已登录" : "账号登录";
   elements["primary-action"].textContent = isOnline ? "注销当前线路" : "登录校园网";
   elements["username-input"].disabled = isOnline;
@@ -535,6 +497,72 @@ async function refreshConnection() {
     interfaceFromToken(activeInterfaceValue()),
   );
   renderConnection();
+  scheduleConnectionPoll();
+}
+
+function scheduleConnectionPoll() {
+  if (applicationState.connectionPollTimerId !== null) {
+    window.clearTimeout(applicationState.connectionPollTimerId);
+    applicationState.connectionPollTimerId = null;
+  }
+  if (
+    document.hidden ||
+    !applicationState.connection ||
+    applicationState.connection.online
+  ) {
+    return;
+  }
+  applicationState.connectionPollTimerId = window.setTimeout(
+    pollConnectionStatus,
+    12000,
+  );
+}
+
+async function pollConnectionStatus() {
+  applicationState.connectionPollTimerId = null;
+  if (document.hidden || applicationState.connectionPollInFlight) {
+    return;
+  }
+  applicationState.connectionPollInFlight = true;
+  try {
+    await refreshConnection();
+  } catch (error) {
+    applicationState.connection = {
+      available: false,
+      online: false,
+      data: {},
+      message: String(error),
+    };
+    renderConnection();
+  } finally {
+    applicationState.connectionPollInFlight = false;
+  }
+}
+
+async function retryConnection() {
+  if (applicationState.busy) {
+    return;
+  }
+  const backend = await waitForBackend();
+  setBusy(true, "正在重试连接...");
+  try {
+    const result = await backend.perform_login(
+      elements["username-input"].value,
+      elements["password-input"].value,
+      interfaceFromToken(activeInterfaceValue()),
+    );
+    setMessage(elements["form-message"], result.message, result.ok ? "success" : "error");
+    if (result.ok) {
+      elements["password-input"].value = "";
+      applicationState.config = await backend.get_app_state();
+      renderConfig();
+      await refreshConnection();
+    }
+  } catch (error) {
+    setMessage(elements["form-message"], String(error), "error");
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function handlePrimaryAction(event) {
@@ -588,14 +616,22 @@ async function handleInterfaceChange() {
 
 async function handleAutoLoginToggle() {
   const backend = await waitForBackend();
-  const desiredValue = elements["auto-login-toggle"].checked;
-  const changed = await backend.set_auto_login(desiredValue);
-  if (!changed) {
-    elements["auto-login-toggle"].checked = false;
-    setMessage(elements["form-message"], "请先使用正确凭据成功登录一次", "error");
+  elements["auto-login-toggle"].disabled = true;
+  try {
+    const desiredValue = elements["auto-login-toggle"].checked;
+    const changed = await backend.set_auto_login(desiredValue);
+    if (!changed) {
+      elements["auto-login-toggle"].checked = false;
+      setMessage(elements["form-message"], "请先使用正确凭据成功登录一次", "error");
+    }
+    applicationState.config = await backend.get_app_state();
+    renderConfig();
+  } catch (error) {
+    elements["auto-login-toggle"].checked = !elements["auto-login-toggle"].checked;
+    setMessage(elements["form-message"], `无法修改断线重连：${error}`, "error");
+  } finally {
+    elements["auto-login-toggle"].disabled = false;
   }
-  applicationState.config = await backend.get_app_state();
-  renderConfig();
 }
 
 async function handleAutoStartToggle() {
@@ -804,15 +840,32 @@ function handleVisibilityChange() {
       window.clearTimeout(applicationState.traffic.pollTimerId);
       applicationState.traffic.pollTimerId = null;
     }
+    if (applicationState.connectionPollTimerId !== null) {
+      window.clearTimeout(applicationState.connectionPollTimerId);
+      applicationState.connectionPollTimerId = null;
+    }
     return;
   }
   scheduleTrafficPoll(0);
   drawTrafficChart();
+  if (!applicationState.connection || !applicationState.connection.online) {
+    pollConnectionStatus();
+  }
 }
 
 function bindEvents() {
   elements["login-form"].addEventListener("submit", handlePrimaryAction);
   elements["refresh-button"].addEventListener("click", refreshConnection);
+  elements["retry-connection-button"].addEventListener("click", retryConnection);
+  elements["update-banner"].addEventListener("click", async (event) => {
+    event.preventDefault();
+    const backend = await waitForBackend();
+    try {
+      await backend.open_releases_page();
+    } catch (error) {
+      window.open("https://github.com/cjdem/SRunPy-GUI/releases/latest", "_blank");
+    }
+  });
   elements["interface-select"].addEventListener("change", handleInterfaceChange);
   elements["auto-login-toggle"].addEventListener("change", handleAutoLoginToggle);
   elements["auto-start-toggle"].addEventListener("change", handleAutoStartToggle);

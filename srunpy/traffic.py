@@ -213,12 +213,16 @@ class TrafficMonitorService:
         self._thread.start()
 
     def stop(self) -> None:
+        """Wake and stop the worker without racing a still-running sample."""
         self._stop_event.set()
-        if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join(timeout=max(2.0, self.sample_interval * 2.0))
+        worker_thread = self._thread
+        if worker_thread is not None and worker_thread is not threading.current_thread():
+            worker_thread.join(timeout=max(2.0, self.sample_interval * 2.0))
         with self._lock:
-            self._flush_accumulator()
-            self._thread = None
+            if worker_thread is None or not worker_thread.is_alive():
+                self._flush_accumulator()
+                if worker_thread is not None:
+                    self._thread = None
 
     def update_selection(self, preferred_ip: Optional[str], gateway_ip: str) -> None:
         with self._lock:

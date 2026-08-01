@@ -44,15 +44,21 @@ class ReconnectService:
     def start(self) -> None:
         """Start the worker once; repeated calls are harmless."""
         with self._lifecycle_lock:
+            self._stop_event.clear()
             if self.is_running:
                 return
-            self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run,
                 name="SRunPy-Reconnect",
                 daemon=True,
             )
             self._thread.start()
+
+    def set_check_interval(self, check_interval: float) -> None:
+        """Update the polling interval; takes effect on the next cycle."""
+        with self._lifecycle_lock:
+            self.check_interval = max(1.0, check_interval)
+            self.maximum_backoff = max(self.check_interval, self.maximum_backoff)
 
     def stop(self, timeout: float = 2.0) -> None:
         """Wake and stop the worker without waiting through a backoff period."""
@@ -75,9 +81,13 @@ class ReconnectService:
             self._failure_counts.pop(stale_key, None)
             self._next_attempt_times.pop(stale_key, None)
 
-        for interface_key, client in clients.items():
+        for interface_key in list(clients):
             if self._stop_event.is_set():
                 return
+
+            client = self.clients_provider().get(interface_key)
+            if client is None:
+                continue
 
             try:
                 is_available, is_online, _ = client.is_connected()
