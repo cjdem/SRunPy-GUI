@@ -27,8 +27,8 @@ jobs:
         run: git diff --check
       - name: Run Ruff
         run: python -m ruff check srunpy tests
-      - name: Run JavaScript unit tests
-        run: node --test "tests/js/*.test.js"
+      - name: Run JavaScript unit and behavior tests
+        run: npm ci && node --test "tests/js/*.test.js"
       - name: Run tests
         run: python -m pytest
       - name: Check core test coverage

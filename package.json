@@ -1,0 +1,12 @@
+{
+  "name": "srunpy-gui-frontend-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Frontend behavior tests for the SRunPy desktop dashboard.",
+  "scripts": {
+    "test:js": "node --test \"tests/js/*.test.js\""
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1"
+  }
+}

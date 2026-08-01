@@ -9,6 +9,9 @@ __pycache__/
 coverage.xml
 htmlcov/
 
+# JavaScript dependencies for frontend behavior tests
+node_modules/
+
 # Build and packaging output
 /build/
 /dist/
