@@ -65,6 +65,24 @@ jobs:
       - name: Build portable client
         shell: powershell
         run: .\scripts\build_windows.ps1 -PythonExecutable python -SkipInstaller
+      - name: Launch-smoke the portable executable
+        # Extracts the portable ZIP and confirms the built executable starts and
+        # stays alive briefly. Non-fatal: a headless runner without a usable GUI
+        # session must not block the release pipeline.
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $zip = Get-ChildItem "${{ github.workspace }}\release\SRunPy-*-win-x64-portable.zip" | Select-Object -First 1
+          $extract = "${{ github.workspace }}\release\smoke"
+          Expand-Archive -Path $zip.FullName -DestinationPath $extract -Force
+          $process = Start-Process -FilePath (Join-Path $extract "SRunClient.exe") -PassThru
+          Start-Sleep -Seconds 6
+          if ($process.HasExited) {
+            Write-Host "Portable executable exited early (exit code $($process.ExitCode))"
+          } else {
+            Write-Host "Portable executable stayed alive after launch smoke."
+            Stop-Process -Id $process.Id -Force
+          }
       - name: Upload portable artifact
         uses: actions/upload-artifact@v4
         with:
