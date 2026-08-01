@@ -998,6 +998,18 @@ def test_rapid_auto_login_toggle_keeps_reconnect_consistent(
     import srunpy.interface as interface
     from srunpy.reconnect import ReconnectService as _RealReconnectService
 
+    class FakeNotification:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def show(self) -> None:
+            pass
+
+    # This test exercises reconnect thread lifecycle, not the external
+    # PowerShell process used by winotify. Keep the subprocess out of CI so
+    # teardown cannot inherit an untracked notification process.
+    monkeypatch.setattr(interface, "Notification", FakeNotification)
+
     config = {
         "username": "student",
         "password": "",
