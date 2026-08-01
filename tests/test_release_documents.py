@@ -51,12 +51,15 @@ def test_release_documents_point_to_the_maintained_fork() -> None:
     maintained_repository_url = "https://github.com/cjdem/SRunPy-GUI"
     source_code_text = (PROJECT_ROOT / "SOURCE_CODE.md").read_text(encoding="utf-8")
     project_metadata_text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    interface_text = (PROJECT_ROOT / "srunpy" / "interface.py").read_text(encoding="utf-8")
+    # The update check now lives in the Windows integration layer.
+    windows_integration_text = (PROJECT_ROOT / "srunpy" / "windows_integration.py").read_text(
+        encoding="utf-8"
+    )
     installer_text = (PROJECT_ROOT / "packaging" / "SRunPy.iss").read_text(
         encoding="utf-8"
     )
 
     assert maintained_repository_url in source_code_text
     assert maintained_repository_url in project_metadata_text
-    assert "api.github.com/repos/cjdem/SRunPy-GUI/releases/latest" in interface_text
+    assert "api.github.com/repos/cjdem/SRunPy-GUI/releases/latest" in windows_integration_text
     assert f"AppPublisherURL={maintained_repository_url}" in installer_text

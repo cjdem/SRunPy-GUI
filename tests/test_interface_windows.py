@@ -147,20 +147,48 @@ def test_sync_reconnect_service_reuses_instance_and_updates_interval() -> None:
 
 
 @win32_only
+def test_interface_reexports_windows_integration_symbols() -> None:
+    """entry.py and tests import the tray/shortcut names from srunpy.interface;
+    the facade must keep re-exporting them after the Windows layer split."""
+    import srunpy.interface as interface
+    import srunpy.windows_integration as windows_integration
+
+    for name in (
+        "TaskbarIcon",
+        "create_lnk",
+        "delete_lnk",
+        "check_lnk",
+        "get_Color_Mode",
+        "get_Update",
+        "MyAES",
+        "LEGACY_AES_KEY",
+        "start_lnk_path",
+        "legacy_start_lnk_path",
+    ):
+        assert hasattr(interface, name), f"interface must re-export {name}"
+        assert getattr(interface, name) is getattr(windows_integration, name)
+
+
+@win32_only
 def test_delete_lnk_removes_current_and_legacy_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import srunpy.interface as interface
+    import srunpy.windows_integration as windows_integration
 
     removed: list[str] = []
-    shortcut_paths = {interface.start_lnk_path, interface.legacy_start_lnk_path}
+    shortcut_paths = {
+        interface.start_lnk_path,
+        interface.legacy_start_lnk_path,
+    }
+    # delete_lnk now lives in the Windows integration layer; patch its module.
     monkeypatch.setattr(
-        interface.os.path,
+        windows_integration.os.path,
         "exists",
         lambda path: path in shortcut_paths,
     )
     monkeypatch.setattr(
-        interface.os,
+        windows_integration.os,
         "remove",
         lambda path: removed.append(str(path)),
     )
