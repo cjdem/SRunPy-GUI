@@ -199,6 +199,7 @@ def test_delete_lnk_removes_current_and_legacy_names(
     assert set(removed) == shortcut_paths
 
 # --- Single-instance mutex behavior ------------------------------------------
+@win32_only
 def test_single_instance_mutex_lifecycle_with_fake_kernel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

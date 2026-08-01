@@ -1,3 +1,4 @@
+import io
 import sys
 
 import pytest
@@ -76,6 +77,22 @@ def test_cli_rejects_multiple_operation_flags(monkeypatch: pytest.MonkeyPatch) -
         entry.Cli()
 
     assert exit_info.value.code == 2
+
+
+def test_cli_help_reconfigures_legacy_windows_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = io.BytesIO()
+    legacy_stream = io.TextIOWrapper(output, encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", legacy_stream)
+    prepare_cli(monkeypatch, "--help")
+
+    with pytest.raises(SystemExit) as exit_info:
+        entry.Cli()
+
+    legacy_stream.flush()
+    assert exit_info.value.code == 0
+    assert "深澜" in output.getvalue().decode("utf-8")
 
 
 def test_cli_passes_security_flags_to_client(

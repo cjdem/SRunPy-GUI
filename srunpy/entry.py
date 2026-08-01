@@ -8,6 +8,7 @@ This module provides command-line and GUI entry points for the SRunPy applicatio
 import argparse
 import json
 import platform
+import sys
 from typing import List, Optional
 
 from srunpy.errors import SrunError
@@ -21,11 +22,26 @@ def _describe_error(error: Exception) -> str:
     return str(error)
 
 
+def _configure_cli_streams() -> None:
+    """Keep bilingual CLI output printable when Windows uses a legacy code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            # Test capture streams and embedded hosts may not allow changing
+            # their encoding; their existing writer should remain usable.
+            pass
+
+
 def Cli() -> None:
     """
     Command-line interface for SRun authentication.
     SRun 认证的命令行界面。
     """
+    _configure_cli_streams()
     from srunpy import SrunClient, __version__
 
     parser = argparse.ArgumentParser(
